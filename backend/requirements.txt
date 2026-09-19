@@ -1,0 +1,32 @@
+# Camera Calibration Studio - Python Backend
+# JetPack 5.1.3 / Python 3.8 compatible versions
+
+# Web Framework
+fastapi>=0.104.0,<0.110.0
+uvicorn[standard]>=0.24.0,<0.30.0
+pydantic>=2.0.0,<3.0.0
+python-multipart>=0.0.6
+
+# Camera / Vision
+numpy>=1.24.0,<2.0.0
+PyYAML>=6.0
+
+# Async support
+httpx>=0.25.0
+
+# OpenCV is intentionally NOT installed via pip.
+#
+# JetPack 5.1.3 ships system OpenCV 4.5.4 built from source with NEON/FP16
+# optimizations at /usr/lib/python3.8/dist-packages/cv2. We rely on that.
+#
+# Why we don't pin opencv-python in this file:
+#   1. PyPI has no `opencv-python==4.5.4` (the matching version is
+#      `4.5.4.60`). An exact `==4.5.4` pin makes pip error out with
+#      "No matching distribution found".
+#   2. The available wheels (>=4.6) have a broken cv2.gapi.wip.draw.Text
+#      module on aarch64 — they raise AttributeError on import.
+#   3. System OpenCV (4.5.4, NEON/FP16) is the correct build for Jetson.
+#
+# If you ever need a different version, install it manually OUTSIDE this
+# requirements file (e.g. `pip install opencv-contrib-python-headless==4.5.4.60`)
+# and update the comment above.

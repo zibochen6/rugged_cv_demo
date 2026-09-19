@@ -1,0 +1,9 @@
+{
+  "id": "mediapipe_face_landmarker",
+  "source": "https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker",
+  "artifact_url": "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task",
+  "artifact_md5": "b0e7274907a1644404fef66b28dd6d85",
+  "runtime": "mediapipe==0.10.5",
+  "license": "Apache-2.0",
+  "purpose": "Landmarks only; fatigue states are calculated by local explainable rules."
+}

@@ -1,0 +1,51 @@
+# venv
+.venv/
+
+# python bytecode / test caches
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# large / downloaded artifacts (re-created by scripts/setup.sh, download_models.sh)
+# /third_party/ is the upstream EfficientTAM checkout. It is git-ignored, but the
+# editable install it creates (egg-link inside .venv) is what backend/app/segment
+# imports, so never delete it. Only its media folders are pruned.
+/third_party/
+checkpoints/
+# model binaries are regenerated on the target device (see models/README.md);
+# only models/manifests/ is versioned
+models/onnx/
+models/tensorrt/
+models/mediapipe/
+
+# runtime output: logs/, hub/dms event jsonl, danger snapshots, telemetry csv
+logs/
+*.mp4
+*.png
+
+# generated data (calibrations, datasets, recordings)
+/data/
+
+# editor / os
+.DS_Store
+.idea/
+.vscode/
+
+# AI tooling scaffolding (personal workspace config, not part of the demo)
+.trellis/
+.claude/
+.codex/
+.agents/
+
+# frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+
+# macOS metadata junk
+._*
+
+# historical / backup snapshots (never tracked; git history is the source of truth)
+*.bak.*
+
+# runtime overrides written by the web UI (user-toggled state, not source)
+configs/_runtime_overrides.yaml

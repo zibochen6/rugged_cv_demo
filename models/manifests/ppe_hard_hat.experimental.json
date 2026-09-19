@@ -1,0 +1,15 @@
+{
+  "id": "ppe_hard_hat.experimental",
+  "experimental": true,
+  "source": "https://github.com/Sanaurrehmanarain/object-detection-yolov8",
+  "artifact_url": "https://raw.githubusercontent.com/Sanaurrehmanarain/object-detection-yolov8/main/best.onnx",
+  "github_blob_sha1": "97b1f84d421b67e41c90dd2120eb70f282ef6367",
+  "repository_license": "MIT",
+  "classes": ["helmet", "head", "person"],
+  "training_dataset": "https://universe.roboflow.com/computer-vision-filqz/hard-hat-detection-62rrp",
+  "limitations": [
+    "Community hard-hat model; training-data and weight rights require separate review.",
+    "Not certified PPE safety logic and must not drive a safety interlock.",
+    "Must be validated against the installed cabin camera before operational use."
+  ]
+}

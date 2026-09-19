@@ -1,0 +1,24 @@
+[Unit]
+Description=Hold PoE PSE power enable (PSE_PWR_EN gpio2/15)
+# Do NOT add "After=multi-user.target" here.
+#
+# This unit is WantedBy=multi-user.target, and visual-hub.service /
+# poe-cam-net.service are ordered After=poe-pse.service, so an explicit
+# "After=multi-user.target" creates the cycle
+#
+#     multi-user.target -> visual-hub.service -> poe-pse.service -> multi-user.target
+#
+# systemd resolves that by DELETING the visual-hub and poe-cam-net start jobs,
+# so neither the hub nor the camera-subnet provisioning ever started at boot
+# (observed in the 2026-09-19 boot journal). DefaultDependencies=yes already
+# orders this unit after basic.target, which is all a GPIO power-enable hold
+# needs.
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/gpioset -m signal 2 15=1
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

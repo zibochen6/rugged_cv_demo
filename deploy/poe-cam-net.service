@@ -1,0 +1,17 @@
+[Unit]
+Description=Bring up camera ethernet ports + subnets
+# Ordering is deliberately limited to the PoE power hold. Do NOT order this
+# unit After=multi-user.target: it is WantedBy=multi-user.target, so that would
+# re-create the boot ordering cycle documented in deploy/poe-pse.service and
+# make systemd drop this unit's start job at boot.
+Requires=poe-pse.service
+After=poe-pse.service
+
+[Service]
+TimeoutStartSec=300
+Type=oneshot
+ExecStart=/usr/local/bin/poe-cam-up.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

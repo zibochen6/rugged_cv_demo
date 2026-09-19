@@ -1,0 +1,30 @@
+# Visual Hub / Jetson — runtime dependencies (Jetson-safe).
+#
+# PyTorch is intentionally not listed. This device runs JetPack 5.1.3,
+# CUDA 11.4 and NVIDIA's aarch64 torch 2.1 wheel. Do not install a generic
+# PyPI torch or the JetPack 6/cu12 wheels; they replace the working runtime.
+#
+# Runtime deps for the three-camera hub (front tracker + rear depth + cabin DMS).
+# We deliberately OMIT:
+#   - gradio / gradio_client / gradio_image_prompter  (we use a cv2 UI)
+#   - nvidia-*-cu12 (x86 pip CUDA runtime — system JetPack CUDA is used instead)
+#   - triton, mkl_*  (x86-only / aarch64-incompatible)
+#   - moviepy / imageio / supervision  (only needed by upstream app.py; our demo uses opencv)
+
+hydra-core>=1.3.2
+iopath>=0.1.10
+# OpenCV is intentionally NOT installed via pip: this device uses the system
+# python3-opencv 4.5.4 build (GStreamer/NEON) inside the venv, as described in
+# docs/archive/MIGRATION.md. PyPI aarch64 wheels >=4.6 raise AttributeError on
+# cv2.gapi.wip.draw.Text.
+tqdm>=4.66.1
+pillow>=9.4.0
+huggingface-hub
+numpy
+mediapipe==0.10.5      # cabin DMS: Face Landmarker (models/mediapipe/face_landmarker.task)
+# Installed with --no-deps by scripts/setup_person_detector.sh so NVIDIA
+# PyTorch remains intact:
+# ultralytics==8.3.40
+# Phase 10A (metric depth, Jetson-safe: pure Python / no CUDA wheels / no torch pin):
+transformers>=4.46,<5   # DepthAnythingForDepthEstimation (PyTorch eager, no TRT yet)
+socksio              # httpx SOCKS support under ALL_PROXY (this lab env)

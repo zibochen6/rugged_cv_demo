@@ -1,0 +1,132 @@
+# DMS (driver monitoring shell) demo config — 演示级，未做 PERCLOS 标定。
+# 诚实口径见文件末尾 notices: 无近红外相机时夜间/强逆光不可用；结果不构成安全认证。
+# 说明: fatigue/helmet 两路开关关闭时该路推理**真正停止**（infer_count 冻结），
+#       阈值只能在这里改，运行时可改的只有这两个布尔开关。
+
+system:
+  debug: false
+
+camera:
+  source: "usb:0"              # usb:<idx> | rtsp://... | video:<file> | image:<path> | synthetic
+  width: 1280
+  height: 720
+  fps: 30
+  open_timeout_s: 8.0
+
+runtime:
+  headless: false
+  max_fps: 10.0                 # latest-frame loop cap; keeps rear thermal headroom
+  state_dump_interval_s: 2.0   # display 模式每隔这么久打印一行 [dms:state] JSON
+
+fatigue:
+  enabled: true                # 默认开
+  alarm_buzzer: false          # 疲劳黄灯默认静音；运行时由总控开关控制
+  infer_interval_frames: 1     # Landmark path is capped by runtime.max_fps
+  backend: landmarks           # MediaPipe Face Landmarker, explainable rules below
+  model_asset: models/mediapipe/face_landmarker.task
+  haar_dir: ""                 # 空 = 自动解析（resolve_haar_dir()）
+  face:
+    scale_factor: 1.1
+    min_neighbors: 5
+    min_size_px: 48
+    min_face_h_px: 48
+    face_lost_warn_s: 2.0
+  roi:
+    eye_x: [0.15, 0.85]
+    eye_y: [0.20, 0.52]
+    mouth_x: [0.28, 0.72]
+    mouth_y: [0.62, 0.92]
+  signal:
+    eye_dark_thresh: 60
+    mouth_dark_thresh: 55
+    eye_dark_enter: 0.55
+    mouth_open_enter: 0.45
+    cascade_crosscheck: false  # true 只写调试字段，不参与判定
+  state_machine:
+    window_frames: 90
+    ema_alpha: 0.25
+    w_eye: 1.0
+    w_mouth: 1.0
+    warn_enter: 0.60
+    alarm_enter: 0.80
+    exit_enter: 0.35
+    warn_confirm_frames: 15
+    alarm_confirm_frames: 15
+    exit_confirm_frames: 45
+    warn_hold_s: 5.0
+  thresholds:
+    signal_ema_alpha: 0.35
+    eye_closure_enter: 0.45
+    eye_warn_s: 1.5
+    eye_alarm_s: 3.0
+    perclos_warn: 0.40
+    perclos_alarm: 0.55
+    perclos_min_window_s: 10.0
+    yawn_open_enter: 0.30
+    yawn_warn_s: 1.5
+    yawn_alarm_s: 3.0
+    yawn_alarm_count: 3
+    recovery_s: 1.0
+    pose_yaw_deg: 30.0
+    pose_pitch_deg: 25.0
+    pose_warn_s: 3.0
+    pose_alarm_s: 5.0
+
+helmet:
+  enabled: true                # 默认开
+  max_fps: 4.0                 # experimental PPE model; rear safety retains priority
+  backend: model               # TensorRT YOLO model; no heuristic fallback
+  engine: models/tensorrt/ppe_hard_hat_fp16.engine
+  manifest: models/manifests/ppe_hard_hat.experimental.json
+  input_size: 640
+  confidence: 0.45
+  iou: 0.50
+  association_iou: 0.15
+  person_model: "models/tensorrt/yolov8n_person_fp16.engine"   # 失败自动回退 checkpoints/yolov8n.pt
+  person_confidence: 0.45      # 人体检测器的分数阈值（不是对演示输出的结论）
+  person_iou: 0.50
+  person_imgsz: 640
+  head_roi_frac: 0.30
+  head_roi_w_frac: 0.70
+  head_roi_min_px: 12
+  roi_margin_px: 4
+  min_person_h_px: 80
+  min_head_area_px: 400
+  rule:
+    worn_color_ratio: 0.35
+    worn_skin_max: 0.25
+    not_worn_skin_ratio: 0.45
+    no_color_ratio: 0.05
+    dark_max: 0.60
+  colors:
+    yellow: {h: [20, 35], s_min: 70, v_min: 70, enabled: true}
+    orange: {h: [8, 20],  s_min: 70, v_min: 70, enabled: true}
+    red:    {h: [[0, 8], [170, 179]], s_min: 70, v_min: 70, enabled: true}
+    blue:   {h: [95, 125], s_min: 70, v_min: 70, enabled: true}
+    white:  {h: [0, 179], s_min: 0, s_max: 40, v_min: 170, enabled: true}
+  skin:
+    cr: [133, 173]
+    cb: [77, 127]
+  smooth:
+    k_verdict_frames: 5
+
+web:
+  port: 8010                   # 契约 §12 最终值（8000 属 Studio；warn_app 的既有默认端口也不同，避免撞车）；--port / DMS_PORT 可覆盖
+  host: "0.0.0.0"
+
+ui:
+  panel_x: 16
+  panel_y: 96
+  line_h: 26
+  font_scale: 0.55
+  hotkey_fatigue: "1"          # ord('1')
+  hotkey_helmet: "2"           # ord('2')
+
+logger:
+  enabled: true
+  dir: logs
+  events_file: dms_events.jsonl
+
+notices:
+  cn: "演示级实现：未做 PERCLOS 标定；无近红外相机时夜间/强逆光不可用；结果不构成安全认证。"
+  ascii: "DEMO ONLY: no PERCLOS calibration; no IR camera -> unusable at night; not a certified safety device."

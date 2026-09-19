@@ -1,0 +1,11 @@
+/home/seeed/workspace/seg_demo/logs/*.log /home/seeed/workspace/seg_demo/logs/*.jsonl {
+    daily
+    rotate 7
+    size 20M
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su seeed seeed
+}

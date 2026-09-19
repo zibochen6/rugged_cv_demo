@@ -1,0 +1,21 @@
+# seg_demo / Visual Hub — full passwordless sudo for the field operator account.
+#
+# Why: the Jetson desktop entry (deploy/visual-hub.desktop -> scripts/run_visual_hub_gui.sh)
+# must be able to start visual-hub.service without a password prompt. This image is
+# L4T R35.5 / Ubuntu 20.04 with polkit 0.105, where `pkexec systemctl start ...`
+# always opens an authentication dialog and 50-local.d pkla rules are root-only.
+# This scope was requested explicitly by the device operator.
+#
+# Install (one time; validated before it is put in place):
+#   sudo visudo -c -f deploy/seeed-nopasswd.sudoers \
+#     && sudo install -m 0440 -o root -g root deploy/seeed-nopasswd.sudoers \
+#          /etc/sudoers.d/seeed-nopasswd \
+#     && sudo visudo -c
+#
+# Remove:
+#   sudo rm -f /etc/sudoers.d/seeed-nopasswd
+#
+# Effect: any process running as seeed can become root without a password.
+# Keep the device on a trusted network, restrict physical access, and never run
+# untrusted code as seeed while this file is installed.
+seeed ALL=(ALL:ALL) NOPASSWD: ALL

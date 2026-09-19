@@ -1,0 +1,28 @@
+[Unit]
+Description=Jetson three-camera Visual Hub
+Wants=network-online.target poe-pse.service poe-cam-net.service
+# poe-cam-net.service is a Type=oneshot that probes the PoE cameras and can take
+# minutes (TimeoutStartSec=300). The hub must not be queued behind it: it starts
+# with all three camera roles idle and only opens a source when the operator
+# starts a module, so provisioning may proceed in parallel.
+After=network-online.target poe-pse.service
+
+[Service]
+Type=simple
+User=seeed
+Group=seeed
+WorkingDirectory=/home/seeed/workspace/seg_demo
+EnvironmentFile=/etc/seg-demo/visual-hub.env
+Environment=HUB_PORT=8000
+ExecStart=/home/seeed/workspace/seg_demo/scripts/run_visual_hub.sh
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=45
+KillMode=control-group
+SendSIGKILL=yes
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=visual-hub
+
+[Install]
+WantedBy=multi-user.target

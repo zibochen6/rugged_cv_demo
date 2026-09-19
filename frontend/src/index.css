@@ -1,0 +1,186 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  background-color: #0f172a;
+  color: #e5e7eb;
+  min-width: 320px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.btn {
+  @apply rounded-md px-4 py-2 font-medium transition-colors duration-150 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40;
+}
+
+.icon-button {
+  @apply inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-slate-600 bg-slate-800 text-slate-100 transition-colors duration-150 hover:bg-slate-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40;
+}
+
+.icon-button:focus-visible {
+  @apply outline-none ring-2 ring-blue-400 ring-offset-2 ring-offset-slate-950;
+}
+
+.btn-primary {
+  @apply btn bg-blue-600 hover:bg-blue-700 text-white;
+}
+
+.btn-success {
+  @apply btn bg-green-600 hover:bg-green-700 text-white;
+}
+
+.btn-danger {
+  @apply btn bg-red-600 hover:bg-red-700 text-white;
+}
+
+.btn-secondary {
+  @apply btn bg-slate-600 hover:bg-slate-700 text-white;
+}
+
+.input {
+  @apply px-3 py-2 bg-slate-800 border border-slate-700 rounded-md focus:border-blue-500 outline-none;
+}
+
+.card {
+  @apply rounded-xl border border-slate-700/80 bg-slate-800/90 p-4 shadow-sm;
+}
+
+.segmented-control {
+  @apply hidden items-center rounded-md border border-slate-700 bg-slate-900 p-1 md:flex;
+}
+
+.segmented-control__item {
+  @apply inline-flex items-center gap-2 rounded px-3 py-1.5 text-xs text-slate-300 transition-colors duration-150 hover:text-white disabled:cursor-not-allowed disabled:opacity-40;
+}
+
+.segmented-control__item--active {
+  @apply bg-slate-700 text-white shadow-sm;
+}
+
+.camera-card {
+  @apply rounded-xl border border-slate-700/80 bg-slate-800/90 p-4 transition-colors duration-200 hover:border-slate-600 hover:shadow-lg;
+}
+
+.metric {
+  @apply rounded-lg border border-slate-700/70 bg-slate-950/45 px-2 py-2;
+}
+
+.metric span {
+  @apply block text-[10px] uppercase tracking-wide text-muted;
+}
+
+.metric strong {
+  @apply mt-0.5 block text-xs font-semibold text-slate-100;
+}
+
+.control-row {
+  @apply flex items-center justify-between gap-3 text-sm;
+}
+
+.control-row > span {
+  @apply w-28 shrink-0 text-slate-300;
+}
+
+.control-row > strong {
+  @apply w-14 text-right text-xs text-slate-100;
+}
+
+.range {
+  @apply min-w-0 flex-1 accent-blue-500;
+}
+
+.range:focus-visible {
+  @apply outline-none ring-2 ring-blue-400 ring-offset-2 ring-offset-slate-800;
+}
+
+.switch {
+  @apply relative h-6 w-11 shrink-0 rounded-full border border-slate-600 bg-slate-700 transition-colors duration-200 disabled:cursor-not-allowed disabled:opacity-40;
+}
+
+.switch-on {
+  @apply border-blue-500 bg-blue-600;
+}
+
+.switch:focus-visible {
+  @apply outline-none ring-2 ring-blue-400 ring-offset-2 ring-offset-slate-800;
+}
+
+.switch-thumb {
+  @apply absolute left-0.5 top-0.5 h-[18px] w-[18px] rounded-full bg-slate-100 transition-transform duration-200;
+}
+
+.switch-on .switch-thumb {
+  transform: translateX(20px);
+}
+
+.indicator {
+  @apply inline-block w-3 h-3 rounded-full;
+}
+
+.indicator-live {
+  @apply bg-green-500 animate-pulse;
+}
+
+.indicator-stopped {
+  @apply bg-slate-500;
+}
+
+.indicator-error {
+  @apply bg-red-500;
+}
+
+.indicator-warn {
+  @apply bg-yellow-500;
+}
+
+.fullscreen-monitor {
+  @apply fixed inset-0 z-50 flex min-h-0 flex-col bg-slate-950;
+}
+
+.fullscreen-monitor:fullscreen {
+  width: 100vw;
+  height: 100vh;
+}
+
+.fullscreen-monitor__bar {
+  @apply flex min-h-16 items-center gap-3 border-b border-slate-800 bg-slate-950 px-4 py-2;
+}
+
+.fullscreen-monitor__stage {
+  @apply grid min-h-0 flex-1 place-items-center overflow-hidden bg-black;
+}
+
+.fullscreen-monitor__video {
+  width: min(100vw, calc((100vh - 64px) * 16 / 9));
+  max-height: calc(100vh - 64px);
+  border-radius: 0;
+}
+
+.fullscreen-monitor__image {
+  @apply h-full w-full object-contain;
+}
+
+.recording-table {
+  @apply w-full min-w-[620px] text-left text-sm;
+}
+
+.recording-table th {
+  @apply border-b border-slate-700 px-3 py-2 text-xs font-medium uppercase tracking-wide text-muted;
+}
+
+.recording-table td {
+  @apply border-b border-slate-800 px-3 py-3 text-slate-200;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn,
+  .icon-button,
+  .camera-card {
+    transition-duration: 1ms;
+  }
+}

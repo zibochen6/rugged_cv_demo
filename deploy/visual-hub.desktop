@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Visual Hub 总控
+Comment=打开三路视觉总控
+Exec=/home/seeed/workspace/seg_demo/scripts/run_visual_hub_gui.sh
+Icon=camera-video
+Terminal=false
+Categories=Utility;AudioVideo;
+StartupNotify=true
