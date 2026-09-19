@@ -452,6 +452,9 @@ a hard reset that overwrites the current working tree.
 
 ## Documentation
 
+> The in-depth documents below are currently Chinese-only; this English README is the entry point, and the
+> Chinese manual is [README.zh.md](README.zh.md).
+
 Current:
 
 | Document | Contents |
