@@ -9,13 +9,23 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from ..hub import inventory
 from ..hub.occupancy import OccupancyError
-from ..hub.runtime import get_hub_runtime
+from ..hub.runtime import CameraBindError, get_hub_runtime
 from ..recording.runtime import RecordingConflict
 
 router = APIRouter(prefix="/api/hub", tags=["hub"])
 
 KNOWN_MODULES = {"front", "rear", "dms"}
+
+#: Rebind refusals -> HTTP status. A bad id is not found, a wrong source *type*
+#: is unprocessable, and a failed persist is an upstream (disk) problem.
+_BIND_STATUS = {
+    "UNKNOWN_CAMERA": 404,
+    "CAMERA_INCOMPATIBLE": 422,
+    "MODULE_RUNNING": 409,
+    "CAMERA_BIND_FAILED": 502,
+}
 
 
 class ModuleConfigBody(BaseModel):
@@ -26,6 +36,17 @@ class ModuleConfigBody(BaseModel):
     warning_m: Optional[float] = Field(default=None, ge=0.5, le=10.0)
     buzzer: Optional[bool] = None
     recording: Optional[bool] = None
+
+
+class CameraBindBody(BaseModel):
+    """Pick a detected camera by id, or paste a source by hand."""
+
+    camera_id: Optional[str] = None
+    source: Optional[str] = None
+
+
+class CameraProbeBody(BaseModel):
+    source: str
 
 
 def _module_or_404(module_id: str):
@@ -53,6 +74,14 @@ def _raise_mode_conflict(exc: RecordingConflict) -> None:
     })
 
 
+def _raise_bind(exc: CameraBindError) -> None:
+    raise HTTPException(status_code=_BIND_STATUS.get(exc.code, 400), detail={
+        "code": exc.code,
+        "message": exc.message,
+        "recoverable": True,
+    })
+
+
 @router.get("/status")
 def hub_status():
     return get_hub_runtime().snapshot()
@@ -62,6 +91,32 @@ def hub_status():
 def hub_events(limit: int = 80, since_id: int = 0):
     runtime = get_hub_runtime()
     return {"ok": True, "events": runtime.events.recent(limit=limit, since_id=since_id)}
+
+
+@router.get("/cameras")
+def camera_inventory():
+    """Detected cameras (redacted) plus the current per-role binding.
+
+    Sources are addressed by an opaque `id`; the `source` field is always
+    credential-free so this unauthenticated LAN endpoint never leaks the PoE
+    camera password.
+    """
+    return get_hub_runtime().camera_inventory()
+
+
+@router.post("/cameras/probe")
+def probe_camera(body: CameraProbeBody):
+    """Classify and redact a hand-entered source without persisting anything.
+
+    Like `GET /cameras`, the reply is structured data only: the UI labels it.
+    """
+    source = (body.source or "").strip()
+    if not source:
+        raise HTTPException(status_code=400, detail={
+            "code": "EMPTY_SOURCE",
+            "message": "no camera source provided",
+        })
+    return {"ok": True, "camera": inventory.describe(source, origin="manual")}
 
 
 @router.get("/modules/{module_id}")
@@ -82,6 +137,8 @@ def start_module(module_id: str):
         _raise_mode_conflict(exc)
     except OccupancyError as exc:
         _raise_occupancy(exc)
+    except CameraBindError as exc:
+        _raise_bind(exc)
     except Exception as exc:
         raise HTTPException(status_code=500, detail={
             "code": "MODULE_START_FAILED",
@@ -104,6 +161,8 @@ def restart_module(module_id: str):
         _raise_mode_conflict(exc)
     except OccupancyError as exc:
         _raise_occupancy(exc)
+    except CameraBindError as exc:
+        _raise_bind(exc)
     except Exception as exc:
         raise HTTPException(status_code=500, detail={
             "code": "MODULE_RESTART_FAILED",
@@ -122,6 +181,38 @@ def start_all():
 @router.post("/actions/stop-all")
 def stop_all():
     return get_hub_runtime().stop_all()
+
+
+@router.put("/modules/{module_id}/camera")
+def set_module_camera(module_id: str, body: CameraBindBody, restart: bool = True):
+    """Bind one role to a detected camera and persist the choice.
+
+    `camera_id` is the normal path (the UI never sees a URL); `source` exists
+    for a hand-entered RTSP URL or an offline video file. A running module is
+    stopped and restarted unless `?restart=false`, in which case the request is
+    refused rather than silently applying only at the next start.
+    """
+    runtime = _module_or_404(module_id)
+    try:
+        if body.camera_id:
+            source, _label = runtime.resolve_camera(body.camera_id)
+        elif body.source:
+            source = body.source
+        else:
+            raise HTTPException(status_code=400, detail={
+                "code": "EMPTY_SOURCE",
+                "message": "camera_id or source is required",
+            })
+        return {
+            "ok": True,
+            "module": runtime.set_module_camera(module_id, source, restart=restart),
+        }
+    except RecordingConflict as exc:
+        _raise_mode_conflict(exc)
+    except OccupancyError as exc:
+        _raise_occupancy(exc)
+    except CameraBindError as exc:
+        _raise_bind(exc)
 
 
 @router.post("/modules/{module_id}/config")

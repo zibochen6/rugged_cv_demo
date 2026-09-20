@@ -19,6 +19,8 @@ const EN = {
   startAllRecordings: 'Record all',
   stopAllRecordings: 'Stop all recordings',
   recordingIdle: 'Start recording to open the live preview.',
+  recordingStarted: 'Started',
+  actions: 'Actions',
   recordingActive: 'Recording',
   recordingPreview: 'Recording preview',
   recordingElapsed: 'Elapsed',
@@ -55,6 +57,23 @@ const EN = {
   start: 'Start',
   stop: 'Stop',
   restart: 'Restart',
+  cameraSource: 'Camera',
+  selectCamera: 'Choose camera',
+  cameraLoadFailed: 'Could not list cameras.',
+  camerasEmpty: 'No cameras detected. Enter a source manually.',
+  cameraInUse: 'in use by',
+  cameraUnreachable: 'not responding',
+  cameraNotAllowed: 'not supported by this module',
+  customSource: 'Enter a source manually',
+  customSourcePlaceholder: 'rtsp://user:password@host:554/ or video:/path/clip.mp4',
+  customSourceApply: 'Use this source',
+  customSourceCancel: 'Cancel',
+  customSourceFailed: 'Unsupported source, or it could not be read.',
+  customSourceBusy: 'Checking...',
+  switchRestarts: 'Switching the camera restarts this module. Continue?',
+  cameraNone: 'Not configured',
+  rearCalibrationWarning: 'Rear depth thresholds were calibrated for the previous camera — re-check them after switching.',
+  frontGeometryNote: 'Front segmentation geometry and click mapping are not calibrated for this source.',
   thermalState: 'Thermal state',
   criticalDegradation: 'Critical degradation',
   constrainedOperation: 'Constrained operation',
@@ -68,11 +87,11 @@ const EN = {
   invalidThresholds: 'Danger distance must be lower than warning distance.',
   rearMustRun: 'Start Rear Warning before applying this configuration.',
   cabinDetection: 'Cabin Detection',
-  cabinHelp: 'Uses the fixed 1080P USB camera and never falls back to a synthetic stream.',
+  cabinHelp: 'Uses the USB cabin camera by default; the camera can be changed per module in the card above.',
   fatigueDetection: 'Fatigue detection',
   fatigueAlarmBuzzer: 'Fatigue alarm buzzer',
   helmetDetection: 'Helmet detection',
-  cabinNote: 'Disabling a detector stops its inference. Stopping Cabin Detection releases /dev/video0.',
+  cabinNote: 'Disabling a detector stops its inference. Stopping Cabin Detection releases its camera.',
   eventStream: 'Unified Event Stream',
   noEvents: 'No events',
   backToHub: 'Back to control center',
@@ -103,6 +122,8 @@ const ZH: Record<CopyKey, string> = {
   startAllRecordings: '全部录制',
   stopAllRecordings: '停止全部录制',
   recordingIdle: '开始录制后开启实时预览。',
+  recordingStarted: '开始时间',
+  actions: '操作',
   recordingActive: '录制中',
   recordingPreview: '录制预览',
   recordingElapsed: '时长',
@@ -139,6 +160,23 @@ const ZH: Record<CopyKey, string> = {
   start: '启动',
   stop: '停止',
   restart: '重启',
+  cameraSource: '摄像头',
+  selectCamera: '选择摄像头',
+  cameraLoadFailed: '无法获取摄像头列表。',
+  camerasEmpty: '未检测到摄像头，请手动填写源。',
+  cameraInUse: '已被占用：',
+  cameraUnreachable: '无响应',
+  cameraNotAllowed: '该模块不支持',
+  customSource: '手动填写源',
+  customSourcePlaceholder: 'rtsp://user:password@host:554/ 或 video:/path/clip.mp4',
+  customSourceApply: '使用该源',
+  customSourceCancel: '取消',
+  customSourceFailed: '源不支持，或无法打开。',
+  customSourceBusy: '检测中...',
+  switchRestarts: '切换摄像头会重启该模块，是否继续？',
+  cameraNone: '未配置',
+  rearCalibrationWarning: '后视距离阈值是按原摄像头标定的，切换后请重新核对。',
+  frontGeometryNote: '前视分割的几何与点击映射未针对该源标定。',
   thermalState: '温控状态',
   criticalDegradation: '临界降级',
   constrainedOperation: '受限运行',
@@ -152,11 +190,11 @@ const ZH: Record<CopyKey, string> = {
   invalidThresholds: '危险距离必须小于警告距离。',
   rearMustRun: '请先启动后视预警再应用配置。',
   cabinDetection: '座舱检测',
-  cabinHelp: '固定使用 1080P USB Camera，不会切换到模拟画面。',
+  cabinHelp: '默认使用 USB 座舱摄像头；摄像头可在上方各模块卡片中单独选择。',
   fatigueDetection: '疲劳检测',
   fatigueAlarmBuzzer: '疲劳报警蜂鸣器',
   helmetDetection: '头盔检测',
-  cabinNote: '关闭某项会停止该项推理；停止座舱会释放 /dev/video0。',
+  cabinNote: '关闭某项会停止该项推理；停止座舱会释放其摄像头。',
   eventStream: '统一事件流',
   noEvents: '暂无事件',
   backToHub: '返回三路总控',
@@ -192,6 +230,14 @@ export function moduleCopy(language: Language, id: ModuleId) {
   return MODULE_COPY[language][id]
 }
 
+/**
+ * Localized module name for an id that arrives as a plain string (for example
+ * `camera.in_use_by`). Falls back to the raw id, never to the other language.
+ */
+export function moduleLabel(language: Language, id: string) {
+  return MODULE_COPY[language][id as ModuleId]?.label || id.toUpperCase()
+}
+
 export function stateText(language: Language, state?: string) {
   return STATE_COPY[language][state || ''] || STATE_COPY[language].stopped
 }
@@ -220,6 +266,8 @@ export function eventText(language: Language, event: HubEvent) {
     if (/stopped|已停止/.test(event.message)) return `${moduleName} stopped and resources released`
     if (/ready|就绪/.test(event.message)) return `${moduleName} ready`
     if (/started|已启动/.test(event.message)) return `${moduleName} started`
+    const switched = event.message.match(/切换为\s*(.+)$/)
+    if (switched) return `${moduleName} camera switched to ${switched[1]}`
   }
   if (!/[\u3400-\u9fff]/.test(event.message)) return event.message
   return `${moduleName} reported a ${event.kind.replace(/_/g, ' ')} event`
@@ -233,5 +281,10 @@ export function errorText(language: Language, value: unknown) {
   if (raw.includes('启动失败')) return 'The module failed to start. Check the module log for details.'
   if (raw.includes('异常退出')) return 'The module exited unexpectedly. Check the module log for details.'
   if (raw.includes('未配置')) return 'The camera source is not configured.'
+  if (raw.includes('不支持的摄像头源')) return 'Unsupported camera source.'
+  if (raw.includes('不支持该源类型')) return 'This module does not support that source type.'
+  if (raw.includes('正在运行')) return 'Stop the module before switching its camera.'
+  if (raw.includes('无法持久化')) return 'Could not save the camera choice. Check the hub log.'
+  if (raw.includes('未知的摄像头')) return 'That camera is no longer detected. Reload the list.'
   return EN.operationFailed
 }

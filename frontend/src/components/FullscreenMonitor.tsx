@@ -36,7 +36,7 @@ const FullscreenMonitor = forwardRef<HTMLDivElement, FullscreenMonitorProps>(
           <div className="min-w-0">
             <h2 className="truncate text-lg font-semibold">{localized.label}</h2>
             <p className="truncate text-xs text-muted">
-              {localized.camera} · {copy.inferenceContinues} · {copy.escToReturn}
+              {module.camera_label || localized.camera} · {copy.inferenceContinues} · {copy.escToReturn}
             </p>
           </div>
           {showMetrics && (

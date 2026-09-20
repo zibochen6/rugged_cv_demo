@@ -1,5 +1,5 @@
 [Unit]
-Description=Bring up camera ethernet ports + subnets
+Description=PoE camera port link watcher + subnet provisioning
 # Ordering is deliberately limited to the PoE power hold. Do NOT order this
 # unit After=multi-user.target: it is WantedBy=multi-user.target, so that would
 # re-create the boot ordering cycle documented in deploy/poe-pse.service and
@@ -8,10 +8,20 @@ Requires=poe-pse.service
 After=poe-pse.service
 
 [Service]
-TimeoutStartSec=300
-Type=oneshot
-ExecStart=/usr/local/bin/poe-cam-up.sh
-RemainAfterExit=yes
+# Resident on purpose. The PoE cameras are powered by this board, so a camera's
+# link can appear long after boot (a camera still booting, or a cable plugged in
+# later). A oneshot that ran once at boot therefore missed it and left the port
+# with no IPv4 address, which is exactly what broke the front RTSP camera on
+# 2026-09-19 (see deploy/poe-cam-up.sh). The script now watches link state and
+# re-provisions whenever a PoE port comes up.
+Type=simple
+ExecStart=/usr/local/bin/poe-cam-up.sh --loop
+# Same protected file the hub reads, so provisioning follows the configured
+# FRONT_CAMERA_URL / REAR_CAMERA_URL subnets. Optional: `-` keeps the unit
+# working when the file is absent (discovery-only fallback).
+EnvironmentFile=-/etc/seg-demo/visual-hub.env
+Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target

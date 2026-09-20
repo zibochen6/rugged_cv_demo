@@ -5,16 +5,21 @@ import MjpegStream from '../components/MjpegStream'
 import SegmentViewport from '../components/SegmentViewport'
 import FullscreenMonitor from '../components/FullscreenMonitor'
 import { getSegmentStatus, type SegmentStatus } from '../api/segment'
-import { COPY, errorText, eventText, moduleCopy, stateText, type Language } from '../i18n'
+import { COPY, errorText, eventText, moduleCopy, moduleLabel, stateText, type Language } from '../i18n'
 import {
   configHubModule,
+  getHubCameras,
   getHubStatus,
   getHubStreamUrl,
+  probeCamera,
   restartHubModule,
+  setHubModuleCamera,
   startAllHubModules,
   startHubModule,
   stopAllHubModules,
   stopHubModule,
+  type CameraInfo,
+  type CameraInventory,
   type HubEvent,
   type HubStatus,
   type ModuleId,
@@ -22,6 +27,11 @@ import {
 } from '../api/hub'
 
 const MODULES: ModuleId[] = ['front', 'rear', 'dms']
+
+/** Sentinel option that opens the hand-entered source row. */
+const CUSTOM_SOURCE = '__custom__'
+
+type CameraTarget = { cameraId?: string; source?: string }
 
 function live(state?: string) {
   return ['running', 'degraded', 'starting'].includes(state || '')
@@ -89,15 +99,182 @@ function VideoPane({ id, module, segment, language, onExpand, onError, suspendSt
   )
 }
 
-function ModuleCard({ id, module, segment, language, busy, onRun, onExpand, onError, suspendStream, showMetrics }: {
+/**
+ * Option text for the camera `<select>`.
+ *
+ * The backend ships only language-neutral data (`RTSP · 192.168.1.10`,
+ * `USB · /dev/video0`) plus codes (`reachable`, `in_use_by`), so every word here
+ * comes from `COPY[language]` — an English interface stays English.
+ */
+/**
+ * The note shown when a role is bound to something other than its factory
+ * camera. The cabin role has no calibration to invalidate (it carries no
+ * intrinsics), so it gets none — showing the rear warning there was wrong.
+ */
+function calibrationNote(moduleId: ModuleId, copy: Record<string, string>) {
+  if (moduleId === 'front') return copy.frontGeometryNote
+  if (moduleId === 'rear') return copy.rearCalibrationWarning
+  return null
+}
+
+function cameraOptionLabel(camera: CameraInfo, moduleId: ModuleId, language: Language) {
+  const copy = COPY[language]
+  const parts = [camera.label]
+  if (camera.in_use_by && camera.in_use_by !== moduleId) {
+    parts.push(`${copy.cameraInUse} ${moduleLabel(language, camera.in_use_by)}`)
+  } else if (camera.reachable === false) {
+    parts.push(copy.cameraUnreachable)
+  }
+  return parts.join(' · ')
+}
+
+/**
+ * Per-module camera chooser.
+ *
+ * The API only ever exposes opaque ids and credential-free labels, so this
+ * component never sees an RTSP password. Switching a live module stops and
+ * restarts it, hence the confirmation.
+ */
+function CameraPicker({ id, module, cameras, language, disabled, onSelect, onError }: {
+  id: ModuleId
+  module?: ModuleStatus
+  cameras: CameraInfo[]
+  language: Language
+  disabled: boolean
+  onSelect: (target: CameraTarget) => void
+  onError: (message: string) => void
+}) {
+  const [manualOpen, setManualOpen] = useState(false)
+  const [draft, setDraft] = useState('')
+  const [probing, setProbing] = useState(false)
+  const copy = COPY[language]
+  const currentId = module?.camera_id || ''
+  const options = useMemo(
+    () => cameras.filter((camera) => camera.allowed_modules.includes(id)),
+    [cameras, id],
+  )
+  const known = options.some((camera) => camera.id === currentId)
+
+  const choose = (value: string) => {
+    if (value === CUSTOM_SOURCE) {
+      setDraft('')
+      setManualOpen(true)
+      return
+    }
+    if (!value || value === currentId) return
+    const target = options.find((camera) => camera.id === value)
+    if (target?.in_use_by && target.in_use_by !== id) {
+      onError(`${copy.cameraInUse} ${moduleLabel(language, target.in_use_by)}`)
+      return
+    }
+    if (live(module?.state) && !window.confirm(copy.switchRestarts)) return
+    onSelect({ cameraId: value })
+  }
+
+  const applyManual = async () => {
+    const source = draft.trim()
+    if (!source) return
+    setProbing(true)
+    try {
+      const { camera } = await probeCamera(source)
+      if (!camera.allowed_modules.includes(id)) {
+        onError(`${copy.cameraNotAllowed}: ${camera.label}`)
+        return
+      }
+      if (live(module?.state) && !window.confirm(copy.switchRestarts)) return
+      setManualOpen(false)
+      setDraft('')
+      onSelect({ source })
+    } catch (reason) {
+      onError(`${copy.customSourceFailed} ${errorText(language, reason)}`)
+    } finally {
+      setProbing(false)
+    }
+  }
+
+  return (
+    <div className="mt-3 space-y-2">
+      <label className="control-row">
+        <span>{copy.cameraSource}</span>
+        <select
+          className="select"
+          value={manualOpen ? CUSTOM_SOURCE : currentId}
+          disabled={disabled}
+          aria-label={`${copy.selectCamera}: ${moduleCopy(language, id).label}`}
+          title={copy.selectCamera}
+          onChange={(event) => choose(event.target.value)}
+        >
+          {!known && (
+            <option value={currentId}>{module?.camera_label || copy.cameraNone}</option>
+          )}
+          {options.map((camera) => (
+            <option
+              key={camera.id}
+              value={camera.id}
+              disabled={Boolean(camera.in_use_by && camera.in_use_by !== id)}
+            >
+              {cameraOptionLabel(camera, id, language)}
+            </option>
+          ))}
+          <option value={CUSTOM_SOURCE}>{copy.customSource}</option>
+        </select>
+      </label>
+      {!options.length && <p className="text-xs text-amber-200">{copy.camerasEmpty}</p>}
+      {manualOpen && (
+        <div className="space-y-2">
+          <input
+            className="input w-full text-sm"
+            type="text"
+            value={draft}
+            placeholder={copy.customSourcePlaceholder}
+            aria-label={copy.customSource}
+            spellCheck={false}
+            autoComplete="off"
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') void applyManual()
+              if (event.key === 'Escape') setManualOpen(false)
+            }}
+          />
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className="btn-primary flex-1 text-sm"
+              disabled={probing || !draft.trim()}
+              onClick={() => void applyManual()}
+            >
+              {probing ? copy.customSourceBusy : copy.customSourceApply}
+            </button>
+            <button
+              type="button"
+              className="btn-secondary text-sm"
+              disabled={probing}
+              onClick={() => setManualOpen(false)}
+            >
+              {copy.customSourceCancel}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ModuleCard({ id, module, segment, language, busy, cameras, cameraDisabled, overridden, bindings, onRun, onExpand, onError, onSelectCamera, suspendStream, showMetrics }: {
   id: ModuleId
   module?: ModuleStatus
   segment: SegmentStatus | null
   language: Language
   busy: boolean
+  cameras: CameraInfo[]
+  cameraDisabled: boolean
+  /** Operator picked a camera that is not the factory default. */
+  overridden: boolean
+  bindings: CameraInventory['modules'] | null
   onRun: (fn: () => Promise<unknown>) => void
   onExpand: () => void
   onError: (message: string) => void
+  onSelectCamera: (target: CameraTarget) => void
   suspendStream: boolean
   showMetrics: boolean
 }) {
@@ -113,11 +290,26 @@ function ModuleCard({ id, module, segment, language, busy, onRun, onExpand, onEr
             <span className={`indicator ${dot(module?.state)}`} />
             <h2 className="font-semibold">{localized.label}</h2>
           </div>
-          <p className="mt-1 text-xs text-muted">{localized.camera} · {stateText(language, module?.state)}</p>
+          <p className="mt-1 text-xs text-muted">{module?.camera_label || localized.camera} · {stateText(language, module?.state)}</p>
         </div>
         <span className="rounded-full bg-slate-900 px-2.5 py-1 text-[11px] text-slate-300">{module?.health_ok ? copy.linkHealthy : copy.notReady}</span>
       </div>
+      {module?.camera_configured === false && (
+        <p className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">{copy.cameraNone}</p>
+      )}
       <VideoPane id={id} module={module} segment={segment} language={language} onExpand={onExpand} onError={onError} suspendStream={suspendStream} />
+      <CameraPicker
+        id={id}
+        module={module}
+        cameras={cameras}
+        language={language}
+        disabled={busy || cameraDisabled}
+        onSelect={onSelectCamera}
+        onError={onError}
+      />
+      {overridden && calibrationNote(id, copy) && (
+        <p className="mt-2 text-xs text-amber-200">{calibrationNote(id, copy)}</p>
+      )}
       {showMetrics && (
         <div className="mt-3 grid grid-cols-3 gap-2">
           <div className="metric"><span>{copy.capture}</span><strong>{m.capture} FPS</strong></div>
@@ -174,6 +366,8 @@ function readRearConfig(snapshot: HubStatus, fallback: RearConfig): RearConfig {
 export default function HubPage({ language }: { language: Language }) {
   const [status, setStatus] = useState<HubStatus | null>(null)
   const [segment, setSegment] = useState<SegmentStatus | null>(null)
+  const [cameras, setCameras] = useState<CameraInfo[]>([])
+  const [bindings, setBindings] = useState<CameraInventory['modules'] | null>(null)
   const [expanded, setExpanded] = useState<ModuleId | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -210,11 +404,29 @@ export default function HubPage({ language }: { language: Language }) {
     }
   }, [language])
 
+  // The camera list is much more expensive than the status poll (it probes RTSP
+  // reachability), so it refreshes far less often, plus right after a switch.
+  const refreshCameras = useCallback(async () => {
+    try {
+      const inventory = await getHubCameras()
+      setCameras(inventory.cameras || [])
+      setBindings(inventory.modules || null)
+    } catch (reason) {
+      setError(`${copy.cameraLoadFailed} ${errorText(language, reason)}`)
+    }
+  }, [copy.cameraLoadFailed, language])
+
   useEffect(() => {
     void refresh()
     const timer = window.setInterval(() => void refresh(), 1200)
     return () => window.clearInterval(timer)
   }, [refresh])
+
+  useEffect(() => {
+    void refreshCameras()
+    const timer = window.setInterval(() => void refreshCameras(), 5000)
+    return () => window.clearInterval(timer)
+  }, [refreshCameras])
 
   useEffect(() => {
     if (!live(status?.modules.front?.state)) {
@@ -283,6 +495,23 @@ export default function HubPage({ language }: { language: Language }) {
     }
   }, [language, refresh])
 
+  const bindCamera = useCallback((id: ModuleId, target: CameraTarget) => {
+    void (async () => {
+      setBusy(id)
+      setError(null)
+      try {
+        await setHubModuleCamera(id, target)
+        // The switch is persisted server-side; re-read both the module state
+        // (a live module was restarted) and the list (occupancy moved).
+        await Promise.all([refresh(), refreshCameras()])
+      } catch (reason) {
+        setError(errorText(language, reason))
+      } finally {
+        setBusy(null)
+      }
+    })()
+  }, [language, refresh, refreshCameras])
+
   const saveRearConfig = useCallback(async (next: RearConfig) => {
     if (next.danger >= next.warning) {
       setError(copy.invalidThresholds)
@@ -320,6 +549,9 @@ export default function HubPage({ language }: { language: Language }) {
   const activeCount = MODULES.filter((id) => live(status?.modules[id]?.state)).length
   const expandedModule = expanded ? status?.modules[expanded] : undefined
   const thermal = status?.thermal
+  // Camera choice is meaningless in recording mode: the API refuses it, because
+  // recording owns its own capture handles on the same sources.
+  const cameraDisabled = busy != null || status?.operation_mode === 'recording'
 
   return (
     <div className="space-y-4">
@@ -352,7 +584,7 @@ export default function HubPage({ language }: { language: Language }) {
       )}
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        {MODULES.map((id) => <ModuleCard key={id} id={id} module={status?.modules[id]} segment={segment} language={language} busy={busy === id || busy === 'all'} onRun={(fn) => void run(id, fn)} onExpand={() => openMonitor(id)} onError={(message) => setError(errorText(language, message))} suspendStream={expanded === id} showMetrics={showMetrics} />)}
+        {MODULES.map((id) => <ModuleCard key={id} id={id} module={status?.modules[id]} segment={segment} language={language} busy={busy === id || busy === 'all'} cameras={cameras} cameraDisabled={cameraDisabled} overridden={Boolean(bindings?.[id]?.overridden)} bindings={bindings} onRun={(fn) => void run(id, fn)} onExpand={() => openMonitor(id)} onError={(message) => setError(errorText(language, message))} onSelectCamera={(target) => bindCamera(id, target)} suspendStream={expanded === id} showMetrics={showMetrics} />)}
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">

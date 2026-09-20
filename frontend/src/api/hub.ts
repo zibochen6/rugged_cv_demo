@@ -39,14 +39,62 @@ export interface ModuleStatus {
   state: string
   pid?: number | null
   port?: number | null
+  /** Role label, e.g. "PoE Rear Camera". Kept for backwards compatibility. */
   camera?: string | null
   camera_slot?: string | null
+  /** Opaque id of the bound camera; match against `CameraInfo.id`. */
+  camera_id?: string | null
+  /** Language-neutral label of the bound camera, e.g. "RTSP · 192.168.1.10". */
+  camera_label?: string | null
+  camera_configured?: boolean
   health_ok: boolean
   last_error?: string | null
   started_at?: number | null
   uptime_s: number
   metrics: Record<string, any>
   stream_url?: string | null
+}
+
+export type CameraKind = 'rtsp' | 'usb' | 'file' | 'test'
+
+/**
+ * One detected camera.
+ *
+ * Every field is structured data or a language-neutral scheme token (`RTSP`,
+ * `USB`, `video`, …): the backend deliberately ships no prose, so the UI labels
+ * options with its own translations. See `backend/app/hub/inventory.py`.
+ */
+export interface CameraInfo {
+  /** Opaque, non-reversible id. The API never returns a raw source. */
+  id: string
+  kind: CameraKind | string
+  /** Credential-free view of the source (RTSP passwords are masked). */
+  source: string
+  /** Language-neutral label, e.g. "RTSP · 192.168.137.20". */
+  label: string
+  /** 'usb' | 'config' | 'extra' | 'manual' — where this candidate came from. */
+  origin: string
+  /** null = not applicable, true/false = reachable / present. */
+  reachable: boolean | null
+  allowed_modules: string[]
+  in_use_by?: string | null
+  /** USB topology path, e.g. "1-2.1". Only stable way to tell identical cameras apart. */
+  usb_port?: string | null
+}
+
+export interface CameraInventory {
+  ok: boolean
+  cameras: CameraInfo[]
+  modules: Record<ModuleId, {
+    module: ModuleId | string
+    /** Empty when the role has no camera; the UI substitutes its own name. */
+    camera_label: string
+    camera_id: string | null
+    configured: boolean
+    /** True when the operator chose this camera, i.e. it is not the env default. */
+    overridden: boolean
+    allowed_modules: string[]
+  }>
 }
 
 export interface HubActionResult {
@@ -63,6 +111,8 @@ export interface HubStatus {
   modules: Record<string, ModuleStatus>
   occupancy: Array<Record<string, any>>
   events: HubEvent[]
+  operation_mode?: string
+  recording?: Record<string, any>
   thermal?: {
     state: 'normal' | 'constrained' | 'critical'
     max_temp_c: number | null
@@ -91,3 +141,22 @@ export const startAllHubModules = () =>
 export const stopAllHubModules = () =>
   fetchJson<HubActionResult>('/api/hub/actions/stop-all', { method: 'POST' })
 export const getHubStreamUrl = (id: ModuleId) => `${API_BASE}/api/hub/stream/${id}`
+export const getHubCameras = () => fetchJson<CameraInventory>('/api/hub/cameras')
+/** Classify + redact a hand-entered source. Persists nothing. */
+export const probeCamera = (source: string) =>
+  fetchJson<{ ok: boolean; camera: CameraInfo }>('/api/hub/cameras/probe', {
+    method: 'POST',
+    body: JSON.stringify({ source }),
+  })
+/**
+ * Bind a role to a camera. Pass `cameraId` for a detected camera, or `source`
+ * for a hand-entered URL / offline clip. A running module is stopped and
+ * restarted, so this resolves only once the module is back up.
+ */
+export const setHubModuleCamera = (id: ModuleId, target: { cameraId?: string; source?: string }) =>
+  fetchJson<{ ok: boolean; module: ModuleStatus }>(`/api/hub/modules/${id}/camera`, {
+    method: 'PUT',
+    body: JSON.stringify(
+      target.cameraId ? { camera_id: target.cameraId } : { source: target.source },
+    ),
+  })

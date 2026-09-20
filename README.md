@@ -3,9 +3,16 @@
 **English** · [中文](README.zh.md)
 
 A **three-camera visual hub plus a pure recording centre** for forklifts and in-plant vehicles: front-view
-click-to-segment, rear-view monocular depth collision warning, and cabin fatigue/helmet monitoring. Camera roles
-are fixed, each module starts on demand, and everything can be released with a single command. The device also
-has a same-page desktop full-screen entry.
+click-to-segment, rear-view monocular depth collision warning, and cabin fatigue/helmet monitoring. Each module
+picks its own camera from the ones the hub can detect, every module starts on demand, and everything can be
+released with a single command. The device also has a same-page desktop full-screen entry.
+
+![Visual Hub console: three camera cards, the rear safety panel and the unified event stream](docs/images/dashboard.png)
+
+*The three-camera console: front click-to-segment, rear depth warning with its live SAFE/WARNING/DANGER panel,
+and cabin helmet/fatigue detection. Each card carries its own camera selector and is bound to one of the cameras
+the hub detected — see [Choose a camera per module](#5-choose-a-camera-per-module) for how the roles share the
+available hardware.*
 
 | Item | Value |
 | --- | --- |
@@ -14,7 +21,7 @@ has a same-page desktop full-screen entry.
 | OS | JetPack 5.1.3 / L4T R35.5.0 / Ubuntu 20.04 |
 | Runtime | Python 3.8.10 (project-local `.venv`), CUDA 11.4, TensorRT 8.5 |
 | PyTorch | `2.1.0a0+41361538.nv23.6` (NVIDIA jp5 redist wheel) |
-| Cameras | 2× PoE RTSP (front/rear) + 1× USB 1080p (cabin, fixed `usb:0`) |
+| Cameras | 2× PoE RTSP + 1× USB 1080p by default; **any role can be re-bound to any detected camera from the UI** |
 
 **Single user entry point:**
 
@@ -53,9 +60,14 @@ sudo systemctl start visual-hub   # start the hub (already enabled at boot)
 
 | Module | Camera | Process model | Port | Capability |
 | --- | --- | --- | --- | --- |
-| **Front segmentation** `front` | `FRONT_CAMERA_URL` (PoE RTSP) | in-process | public **8000** | EfficientTAM click-to-segment, memory tracking, verified re-lock when the target reappears |
-| **Rear warning** `rear` | `REAR_CAMERA_URL` (PoE RTSP) | child `app/warn_app.py` | loopback **8080** | monocular metric depth, obstacle + person channels, `SAFE/WARNING/DANGER/SYSTEM_ERROR` |
-| **Cabin monitoring** `dms` | USB `usb:0` (fixed) | child `app/dms_app.py` | loopback **8010** | MediaPipe face fatigue + three-value helmet state, two independently switchable paths |
+| **Front segmentation** `front` | `FRONT_CAMERA_URL` (PoE RTSP) · re-bindable | in-process | public **8000** | EfficientTAM click-to-segment, memory tracking, verified re-lock when the target reappears |
+| **Rear warning** `rear` | `REAR_CAMERA_URL` (PoE RTSP) · re-bindable | child `app/warn_app.py` | loopback **8080** | monocular metric depth, obstacle + person channels, `SAFE/WARNING/DANGER/SYSTEM_ERROR` |
+| **Cabin monitoring** `dms` | `DMS_CAMERA` (default `usb:0`) · re-bindable | child `app/dms_app.py` | loopback **8010** | MediaPipe face fatigue + three-value helmet state, two independently switchable paths |
+
+The "Camera" column is a **default**, not a constraint: each role can be pointed at any detected camera from its
+card in the UI, and the choice is persisted (see [Choose a camera per module](#5-choose-a-camera-per-module)). The
+defaults come from the protected environment file; a role with no camera simply refuses to start, with a
+per-module error, instead of taking the hub down with it.
 
 The hub itself owns **exclusive camera leases** (one holder per physical device), child-process supervision and
 restart, USB signal-light arbitration (rear `DANGER` outranks cabin fatigue), thermal de-rating (88 °C step down /
@@ -63,12 +75,15 @@ restart, USB signal-light arbitration (rear `DANGER` outranks cabin fatigue), th
 event bus (500-entry in-memory ring + `logs/hub_events.jsonl`), the recording runtime and the MJPEG proxy.
 
 At startup all three roles are **idle**: no camera held, no model loaded, no VRAM allocated. Camera roles never
-swap according to discovery order.
+swap according to discovery order — a role only ever uses the camera the operator bound to it.
 
 ## Features
 
 - **Start All / Stop All**: start order is rear → front → cabin; stop order is cabin → front → rear, releasing
   camera, model, CUDA and child process per path. One failing module never tears down a healthy rear view.
+- **Per-module camera choice**: each card lists the detected cameras (PoE RTSP, USB nodes, hand-entered sources)
+  with reachability and current holder, and the choice is persisted without `sudo` or a restart — see
+  [Choose a camera per module](#5-choose-a-camera-per-module).
 - **Front-view interaction**: left click to select/refine, right click to exclude, "Clear target" to re-pick.
   After a long loss the target is re-locked only if it passes appearance-template verification, so a different
   object is rejected.
@@ -105,14 +120,16 @@ seg_demo/
 │       ├── config.py       preview-stream and HTTP defaults
 │       ├── api/            system · camera (MJPEG source only) · hub · recording
 │       ├── hub/            occupancy leases/child supervision/event bus/thermal/signal light/MJPEG proxy
+│       │                   + inventory.py (camera detection, opaque ids, credential redaction)
 │       ├── recording/      recording runtime (GStreamer H.264 → MP4)
 │       ├── segment/        click-to-segment service + built-in EfficientTAM wrapper
 │       ├── camera/         CameraManager (exclusive, state machine)
 │       └── streaming/      MJPEG encoder
 ├── frontend/           React pages: Hub (three-camera console) + Recording (pure recording centre)
 ├── configs/            dms.yaml · warning.yaml · _runtime_store.py · _runtime_overrides.yaml (runtime)
+│                       _camera_bindings.yaml (per-role camera choice; created on demand, git-ignored)
 ├── deploy/             system-side installation artifacts (see "Installation and deployment")
-├── scripts/            17 scripts, see the table below
+├── scripts/            1 script, run_visual_hub.sh — the only entry point (see the table below)
 ├── tests/              single test root: hub/ segment/ dms/ warning/ geometry/ + top-level cases
 ├── docs/               current documentation; historical material in docs/archive/
 ├── models/             converted artifacts: onnx/ tensorrt/ mediapipe/ manifests/
@@ -121,35 +138,42 @@ seg_demo/
 └── logs/               runtime output (see "Logs and retention")
 ```
 
-**Scripts come in three groups (17 total)**
+**`scripts/` holds exactly one file**
 
-| Group | Scripts |
+| Script | Subcommands |
 | --- | --- |
-| Product entry points (3) | `run_visual_hub.sh` (start/stop/status; the same script is systemd's `ExecStart`), `run_visual_hub_gui.sh` (desktop entry), `gui_display.sh` (physical/RDP/Xpra display selection, sourced by the GUI entry) |
-| Field operations (7) | `install_dms_models.sh`, `setup_person_detector.sh`, `build_engine.sh`, `export_depth_onnx.py`, `download_models.sh`, `download_efficienttam.sh`, `monitor_jetson.sh` |
-| Environment and verification (7) | `setup.sh`, `env.sh`, `verify_env.sh`, `segment_offline_demo.py`, `run_dms_demo.sh`, `calibrate_camera_intrinsics.py`, `check_readme_paths.py` (self-check for this README's references) |
+| `run_visual_hub.sh` | `start` (default — the same script is systemd's `ExecStart`), `stop [--poe]`, `status`, `gui` |
+
+`gui` is the desktop entry: it starts the service when it is down (passwordless `systemctl start --no-block`),
+waits for `/api/health`, picks a display the operator can actually see (physical console / RDP / xpra / SSH X11)
+and opens the hub full screen in a Firefox kiosk. The display selection is part of this same self-contained file.
+
+Everything else that used to live here — the one-shot environment provisioning, model/engine conversion, camera
+calibration, `tegrastats` sampling, the offline segmentation and cabin demos and the README path self-check — was
+removed on 2026-09-20: none of it is on the runtime path and the device is already provisioned. Any of those files
+can be recovered from this repository's history with `git show HEAD:scripts/<name>` (the `install_dms_models`
+helper was never committed; it only exists in the pre-cleanup backup tarball).
 
 ## Installation and deployment
 
 ### 1. Runtime environment
 
+The runtime environment is already provisioned on this device: `.venv/` carries the Jetson torch/OpenCV runtime
+and `third_party/` the editable EfficientTAM checkout. Activate the venv with:
+
 ```bash
-./scripts/setup.sh          # idempotent: create/verify .venv, install deps, editable EfficientTAM, fetch weights, CUDA gate
-./scripts/verify_env.sh     # re-run only the CUDA/torch gate
-source scripts/env.sh       # activate the venv + CUDA environment
+source .venv/bin/activate
 ```
 
-`setup.sh` never replaces the Jetson torch runtime with a PyPI wheel and never replaces the system OpenCV (this
-device uses the system `python3-opencv 4.5.4` build with GStreamer). The full JetPack 6 → 5 adaptation log lives in
-`docs/archive/MIGRATION.md`.
+The one-shot provisioning helpers were removed on 2026-09-20 (recover with `git show HEAD:scripts/<name>` if the
+venv ever has to be rebuilt). They never replaced the Jetson torch runtime with a PyPI wheel and never replaced the
+system OpenCV (this device uses the system `python3-opencv 4.5.4` build with GStreamer). The full JetPack 6 → 5
+adaptation log lives in `docs/archive/MIGRATION.md`.
 
 ### 2. Models and weights
 
-```bash
-./scripts/install_dms_models.sh      # cabin: MediaPipe Face Landmarker + PPE engine (manifest-verified)
-./scripts/setup_person_detector.sh   # person detection: YOLOv8n -> models/onnx + models/tensorrt
-./scripts/build_engine.sh 518        # rear depth: Depth-Anything-V2 -> TensorRT FP16 engine
-```
+The weights and converted engines are already in place (table below). The one-shot converters that produced them
+were removed on 2026-09-20 and can be recovered with `git show HEAD:scripts/<name>`.
 
 | Location | Contents |
 | --- | --- |
@@ -181,10 +205,10 @@ sudo ./deploy/install.sh               # install / refresh
 
 | Installed to | Source | Notes |
 | --- | --- | --- |
-| `/etc/systemd/system/visual-hub.service` | `deploy/visual-hub.service` | `User=seeed`, `KillMode=control-group`, `TimeoutStopSec=45`; repo path rewritten to this checkout |
+| `/etc/systemd/system/visual-hub.service` | `deploy/visual-hub.service` | `User=seeed`, `KillMode=control-group`, `TimeoutStopSec=45`; `EnvironmentFile=-…` (optional on purpose); repo path rewritten to this checkout |
 | `/etc/systemd/system/poe-pse.service` | `deploy/poe-pse.service` | PoE PSE power hold (carries the ordering-cycle note — do **not** add `After=multi-user.target`) |
-| `/etc/systemd/system/poe-cam-net.service` | `deploy/poe-cam-net.service` | camera NICs and subnets, an oneshot with `TimeoutStartSec=300` |
-| `/usr/local/bin/poe-cam-up.sh` | `deploy/poe-cam-up.sh` | the script the oneshot above actually runs |
+| `/etc/systemd/system/poe-cam-net.service` | `deploy/poe-cam-net.service` | camera NICs and subnets, a resident `Type=simple` link watcher that re-provisions whenever a PoE port changes state |
+| `/usr/local/bin/poe-cam-up.sh` | `deploy/poe-cam-up.sh` | the script the watcher above runs with `--loop`; a bare run is one provisioning pass |
 | `/etc/logrotate.d/visual-hub` | `deploy/visual-hub.logrotate` | daily / 20 MB rotation with compression; log directory rewritten to this checkout |
 | `/etc/sudoers.d/seeed-nopasswd` | `deploy/seeed-nopasswd.sudoers` | validated with `visudo -c -f` first; the drop-in is removed automatically if the whole config then fails to parse |
 | `/etc/seg-demo/visual-hub.env` | `deploy/visual-hub.env.example` | generated from the template **only when missing**, never overwritten afterwards |
@@ -192,20 +216,83 @@ sudo ./deploy/install.sh               # install / refresh
 
 ### 4. Protected environment file
 
-Real RTSP credentials live only in `/etc/seg-demo/visual-hub.env` (`root:root 0600`):
+Real RTSP credentials live only in `/etc/seg-demo/visual-hub.env` (`root:root 0600`). **These values are factory
+defaults, not requirements**: the unit uses `EnvironmentFile=-…`, so the hub boots with no such file at all, and
+each role can be re-bound from the UI afterwards.
 
 | Variable | Required | Meaning |
 | --- | --- | --- |
-| `FRONT_CAMERA_URL` | ✅ | front camera RTSP URL |
-| `REAR_CAMERA_URL` | ✅ | rear camera RTSP URL |
-| `DMS_CAMERA` | — | fixed `usb:0`; any other value makes the hub refuse to start |
+| `FRONT_CAMERA_URL` | — | front camera RTSP URL (no default; the role stays unconfigured until set) |
+| `REAR_CAMERA_URL` | — | rear camera RTSP URL (no default; `RTSP_URL` still works as a legacy alias) |
+| `DMS_CAMERA` | — | cabin camera, defaults to `usb:0`; any `usb:<idx>` / `rtsp://…` / `video:<file>` / `image:<path>` / `synthetic` is accepted |
+| `HUB_EXTRA_CAMERAS` | — | comma-separated spare camera URLs offered in the picker without promoting them to a role default |
+| `HUB_CAMERA_BINDINGS` | — | path of the per-role binding file, defaults to `configs/_camera_bindings.yaml` |
 | `HUB_PORT` | — | defaults to `8000` |
 | `SEG_DEMO_RUNTIME_OVERRIDES` | — | rear-config persistence path, defaults to `configs/_runtime_overrides.yaml` |
 | `VISUAL_HUB_RECORDING_ROOT` | — | recording root, defaults to `~/Videos/visual-hub` |
 | `FRONT_PORT` / `WEB_PORT` / `DMS_PORT` / `HUB_PYTHON` | — | port and interpreter overrides (normally untouched) |
 
-The web UI, the public status API, the logs and the child-process command lines only ever show
-"PoE front / PoE rear / USB cabin" — never the full URL.
+The web UI, the public status API, the logs and the child-process command lines only ever show an opaque camera id
+plus a credential-free label such as `RTSP · 192.168.137.20` — never the full URL. `tests/hub/test_runtime.py`
+asserts that no status payload contains `rtsp://` at all.
+
+### 5. Choose a camera per module
+
+Every module card carries a **Camera** selector listing the cameras the hub can actually see:
+
+| Kind | Detected from | Reachability shown as |
+| --- | --- | --- |
+| `rtsp` | `FRONT_CAMERA_URL` / `REAR_CAMERA_URL` / `HUB_EXTRA_CAMERAS` | a bounded TCP connect to `host:554` (cached 10 s) |
+| `usb` | `/sys/class/video4linux` → `usb:<idx>` | whether `/dev/video<idx>` exists |
+| `file` | typed by hand (`video:<path>` / `image:<path>`) | whether the path exists |
+| `test` | `synthetic` (cabin only) | always available |
+
+What the selector does:
+
+- **Detection never opens a device.** `backend/app/hub/inventory.py` reads sysfs only. Opening a camera that a
+  module already holds fails at best and steals the handle at worst, so the older `enumerate_devices()` helper
+  (which does open every node) is deliberately not used.
+- **Credentials never leave the device.** The API addresses cameras by an opaque `sha256(source)[:12]` id and
+  returns a redacted `source`. Typing an RTSP URL by hand goes through `POST /api/hub/cameras/probe`, which
+  classifies and redacts it without persisting anything.
+- **USB cameras: one streaming node per camera, and one bus between them.** A UVC camera registers several
+  V4L2 nodes on one USB interface — the streaming function (`index` 0) and a metadata function (`index` 1) that
+  cannot be opened at all — so only the streaming node is listed (`USB · /dev/video2 (1080P USB Camera @1-2.1)`).
+  The `@1-2.1` part is the USB port path, and it is the *only* stable way to tell two identical cameras apart:
+  cheap UVC models report the same product, vendor, and even the same serial string. `/dev/video2` and `usb:2`
+  are the same camera written two ways; both are accepted and always normalized to `usb:<idx>`.
+- **Two USB cameras on one USB 2.0 bus cannot stream at the same time.** On the Rugged J401 both cameras land on
+  the same `usb1` hub (480 Mbps), and the kernel refuses the second one with `Not enough bandwidth for
+  altsetting 1` — at every resolution, even 320×240. Move one camera to the USB 3 socket (`usb2`, 10 Gbps) or
+  run only one. The module reports the failure (`degraded`, `camera_running: false`, `last_error` set) rather
+  than showing a green indicator at 0.0 FPS.
+- **The API ships no display prose.** `/api/hub/cameras` returns structured fields plus language-neutral
+  source-scheme tokens (`RTSP · 192.168.137.20`, `USB · /dev/video0`, `video · clip.mp4`). Every human-readable
+  word the operator sees is composed by the UI from its own translations, so an English interface stays English;
+  a test asserts the whole payload contains no CJK characters at all.
+- **Switching a running module stops and restarts it.** The source is handed to the child process (or to the
+  in-process `CameraManager`) once, at start; neither `/api/config` nor `/api/dms_config` can change it live. The
+  UI confirms before doing this.
+- **One camera, one holder.** A camera already leased by another module is shown greyed out with its holder, and
+  a forced request is refused with `409 CAMERA_BUSY`. Recording mode refuses a rebind outright
+  (`409 RECORDING_ACTIVE`), because recording holds its own capture handles on the same sources.
+- **The choice persists.** It is written to `configs/_camera_bindings.yaml` (mode `0600`, git-ignored) by the
+  `seeed` user, so no `sudo` and no service restart is involved. Precedence is
+  **binding file → environment → built-in default**, and only a value that *differs* from the environment default
+  counts as an override, so re-selecting the factory camera clears the "recalibrate" warnings.
+- **Deleting that file restores the previous behaviour exactly.** It is the whole rollback.
+
+Two consequences worth knowing:
+
+- **`usb:<idx>` indexes are not stable across replugging.** Ids are hashes of the source string, so a camera that
+  re-enumerates at a different index appears as a new entry; re-select it (or type the source) if that happens.
+- **Switching cameras invalidates calibration.** The rear depth thresholds are calibrated against the factory PoE
+  camera (`configs/warning.yaml` `camera.intrinsics` / `camera_mount`), and the front view's geometry is not
+  calibrated for a different sensor. The card shows a warning whenever a role is bound to a non-default camera.
+
+Something that is *not* detected: a brand-new PoE camera on an unknown subnet. `deploy/poe-cam-up.sh` already owns
+subnet provisioning for the configured subnets; to use a camera it has not been told about, add it to
+`HUB_EXTRA_CAMERAS` or type its URL in the picker.
 
 ## Running and operations
 
@@ -224,8 +311,19 @@ journalctl -u visual-hub -n 200 --no-pager
 
 `stop` is idempotent and passwordless: running it again returns 0 with an "already stopped" message. The main
 path is `POST /api/recording/actions/stop-all` → `POST /api/hub/actions/stop-all` → `systemctl stop`, and only if
-that fails does it fall back to `SIGTERM` on the hub process. `--poe` cuts camera power, so the next start has to
-wait for `poe-cam-net` to probe again (up to 300 s).
+that fails does it fall back to `SIGTERM` on the hub process. `--poe` cuts camera power; `poe-cam-net` is a
+resident link watcher, so the camera subnets are re-provisioned as soon as a PoE port has link again — there is
+no fixed probe window to wait out.
+
+Two things to know before running the script by hand:
+
+- **A bare `./scripts/run_visual_hub.sh` fails with exit 3 if the port is already taken**, which means the service
+  is already up. It says so instead of leaving you with uvicorn's `[Errno 98] address already in use`. To restart,
+  use `sudo systemctl restart visual-hub`; to run in the foreground, `./scripts/run_visual_hub.sh stop` first.
+- **A manual run cannot see `FRONT_CAMERA_URL` / `REAR_CAMERA_URL`.** `/etc/seg-demo/visual-hub.env` is
+  `root:root 0600` and unreadable by `seeed`, so only systemd can inject it. A foreground run therefore falls back
+  to `configs/_camera_bindings.yaml` (which the web UI writes, and which *is* readable by `seeed`) and otherwise
+  starts with no cameras at all — it prints exactly that, rather than looking like the configuration was lost.
 
 ### Auto-start at boot
 
@@ -243,11 +341,11 @@ Measured after a real reboot (2026-09-19 15:01): **0** `ordering cycle` lines in
 With a monitor attached, double-clicking "Visual Hub 总控" on the desktop starts the service without a password
 prompt and opens the same pages in a Firefox kiosk. A single-instance lock makes repeated clicks just raise a
 notification; when the service is down the entry starts it with
-`sudo -n systemctl start --no-block` and then polls `/api/health` (≤300 s), so a slow PoE probe cannot freeze the
-desktop entry. To run it by hand:
+`sudo -n systemctl start --no-block` and then polls `/api/health` (≤300 s), so a slow service start (model load,
+camera open) cannot freeze the desktop entry. To run it by hand:
 
 ```bash
-./scripts/run_visual_hub_gui.sh
+./scripts/run_visual_hub.sh gui
 ```
 
 ### Day-to-day operation
@@ -271,8 +369,8 @@ thresholds) `watchdog` `logger` `events` `io` (alarm mode).
   frames; distance is the 10th percentile over the obstacle region.
 - Camera loss, consecutive invalid depth frames, or a failing inference backend → `SYSTEM ERROR` (fail-visible).
 - With `camera.calibrated: false` the intrinsics fall back to a 60° horizontal FOV estimate, so distances only
-  carry ordinal meaning; calibrate with
-  `./scripts/calibrate_camera_intrinsics.py --source usb:0` and copy the result in by hand.
+  carry ordinal meaning; a real calibration (checkerboard intrinsics, produced once by a helper that was removed
+  on 2026-09-20) has to be copied into the config by hand.
 - Details: [docs/warning.md](docs/warning.md).
 
 ### Cabin configuration
@@ -293,6 +391,17 @@ runtime:
   warning_m: 1.7
   buzzer: true
 ```
+
+`configs/_camera_bindings.yaml` is the one other runtime file, written by the same store with the same atomic
+write, but as a separate file so the hub never read-modify-writes the file a child module is also updating:
+
+```yaml
+cameras:
+  dms: usb:0
+```
+
+It holds a raw RTSP URL when a role points at a PoE camera, so it is created `0600` and git-ignored. Remove it to
+fall back to the environment defaults.
 
 ## Recording centre
 
@@ -322,6 +431,9 @@ all at once. Only raw frames are stored — no models loaded, no overlay, no aud
 | POST | `/api/hub/modules/{module_id}/start` `stop` `restart` | per-module start/stop/restart |
 | POST | `/api/hub/actions/start-all` `stop-all` | Start All / Stop All |
 | POST | `/api/hub/modules/{rear,dms}/config` | rear distances and buzzer, cabin switches |
+| GET | `/api/hub/cameras` | detected cameras (opaque id + redacted source) and the current per-role binding |
+| POST | `/api/hub/cameras/probe` | classify and redact a hand-entered source; persists nothing |
+| PUT | `/api/hub/modules/{module_id}/camera` | bind a role to `{"camera_id": …}` or `{"source": …}`; `?restart=false` applies at next start |
 | GET | `/api/hub/stream/{module_id}` | the three MJPEG streams (the browser's only video entry point) |
 | GET | `/api/camera/stream.mjpg` | raw front MJPEG (the source behind the front stream above) |
 | GET | `/api/segment/status` | front segmentation status |
@@ -345,7 +457,7 @@ Rear-view configuration example: `{"danger_m": 1.5, "warning_m": 3.0, "buzzer": 
 | `danger_*.jpg` | rear `DANGER` snapshots | pruned in code: newest 200 and ≤14 days |
 | `session_*.csv` | rear per-frame telemetry (one file per run) | pruned in code: newest 40 and ≤14 days |
 | `hub_*.log`, `hub_events.jsonl`, `dms_events.jsonl` | hub / child processes | logrotate: daily or 20 MB, 7 compressed generations |
-| `tegrastats.log` | `scripts/monitor_jetson.sh` | manual sampling, managed by hand |
+| `tegrastats.log` | manual `tegrastats` sampling | managed by hand |
 
 Without `logrotate` the last two groups grow without bound. After installing it, confirm:
 
@@ -362,7 +474,7 @@ systemctl list-timers | grep logrotate
 cd frontend && npm run build
 ```
 
-Currently **254 passed, 2 skipped**. Every case that needs real hardware is gated behind
+Currently **343 passed, 2 skipped**. Every case that needs real hardware is gated behind
 `SEG_DEMO_HARDWARE_TESTS=1` (skipped by default, visible rather than hidden):
 
 ```bash
@@ -370,15 +482,13 @@ SEG_DEMO_HARDWARE_TESTS=1 .venv/bin/python -m pytest -q tests/test_camera_manage
     tests/segment/test_model_load.py
 ```
 
-After editing a README or moving files, re-check that no documented path went missing:
-
-```bash
-.venv/bin/python scripts/check_readme_paths.py     # 0 = every reference resolves
-```
+The README path self-check that used to guard this section (72 references, 0 unresolved when it was last run) was
+removed on 2026-09-20 with the rest of the one-shot helpers; recover it with `git show HEAD:scripts/<name>` if the
+docs are reworked again.
 
 | Directory | Coverage |
 | --- | --- |
-| `tests/hub/` | runtime supervision, recording runtime, thermal policy, signal light, cabin events |
+| `tests/hub/` | runtime supervision, recording runtime, thermal policy, signal light, cabin events, camera inventory/redaction and per-role camera binding (including "no status payload contains an RTSP URL") |
 | `tests/segment/` | segmentation service/state machine/polygons/templates/model load (hardware-gated) |
 | `tests/dms/` | fatigue signals and state machine, helmet heuristic, PPE, render/HUD, switches, web contract |
 | `tests/warning/` | risk core, synthetic-scene gate, person channel, thermal de-rating, retention pruning |
@@ -392,9 +502,15 @@ After editing a README or moving files, re-check that no documented path went mi
 | Double-clicking the desktop icon asks for a password | does `/etc/sudoers.d/seeed-nopasswd` exist | `sudo ./deploy/install.sh` |
 | Port 8000 unreachable after boot, service inactive | `journalctl -b \| grep "ordering cycle"`, `systemctl is-enabled visual-hub` | `sudo ./deploy/install.sh` (it checks and reports the cycle) |
 | A module reports "camera busy" | `occupancy` in `curl -s :8000/api/hub/status` | stop the current holder; for USB use `fuser -v /dev/video0` |
+| A camera is missing from the picker | `curl -s :8000/api/hub/cameras` | the list is "detected + currently bound": add the URL to `HUB_EXTRA_CAMERAS`, or type it in the picker's manual row |
+| A per-role camera choice will not stick | `cat configs/_camera_bindings.yaml`, `ls -ld configs/` | the file must be writable by `seeed`; point `HUB_CAMERA_BINDINGS` at a writable path if the checkout is not |
+| A USB camera is listed but a module cannot open it | `sudo dmesg \| grep -i "not enough bandwidth"` | two UVC cameras on one USB 2.0 bus: move one to the USB 3 socket (`usb2`) or stop the other module |
+| Picker shows a camera as "not responding" | `ping -I eth1 <camera IP>`, `curl -s :8000/api/hub/cameras` | the reachability column is a real TCP connect to `host:554`; a dead PoE camera is reported rather than hidden |
 | Front view has video, rear/cabin do not | `ss -ltnp \| grep -E ':8080\|:8010'` | 8080/8010 are loopback-only; the browser must use `/api/hub/stream/*` |
 | Front view takes ~8 s to appear | the model-load line in `journalctl -u visual-hub` | first load of the EfficientTAM weights — expected |
 | Both PoE cameras drop or keep restarting | shared PoE power budget | move at least one camera to an external PoE switch/injector (infinite RTSP retries cannot fix a brownout) |
+| Front view stuck on "Connecting to camera…" with CAPTURE 0.0 FPS | `ip -br addr show eth0 eth1 eth2 eth3 eth4`, `ip route get 192.168.137.20`, `journalctl -u poe-cam-net -n 40` | the PoE port holding the camera must also hold the `192.168.137.100/24` address. `poe-cam-net` assigns it as soon as a port has link, so an empty port means no link (cabling/PSE), not a subnet bug |
+| PoE camera pings, but the front view is frozen (fps 0, frame age growing) | `frame_age_s` in `curl -s :8000/api/hub/modules/front` | the capture supervisor re-opens a stalled RTSP stream after `SEG_DEMO_RTSP_STALL_TIMEOUT_S` (8 s); repeated "RTSP reconnect failed" means the camera itself is not answering RTSP |
 | `*_events.jsonl` keeps growing | `systemctl list-timers \| grep logrotate` | install logrotate and re-run `deploy/install.sh` |
 | `signal_light.last_error` shows a serial `FileNotFoundError` | is a serial signal light attached? | expected when none is; adjust `configs/warning.yaml: io.alarm_mode` |
 | Cabin view unusable at night or in strong backlight | is there a near-infrared camera? | without NIR the RGB face landmarks fail — a known limitation |
@@ -405,7 +521,7 @@ curl -s http://127.0.0.1:8000/api/hub/status          # hub and per-module statu
 ss -ltnp | grep -E ':8000|:8010|:8080'                # only 8000 should be public
 fuser -v /dev/video0                                  # no holder after the USB path stops
 ps -ef | grep -E 'warn_app|dms_app|backend.app.main'
-./scripts/monitor_jetson.sh                           # sample into logs/tegrastats.log
+tegrastats --interval 5000 >> logs/tegrastats.log     # manual sampling
 ```
 
 ## Security
@@ -478,7 +594,11 @@ provenance only.
   heuristic.
 - The rear and front cameras share the Rugged J401 PoE power budget; when both drop at once, suspect power
   before software.
-- `poe-cam-net.service` can probe for up to 300 s; the hub stays usable meanwhile (the dependency was decoupled
-  so it no longer queues behind it).
+- `poe-cam-net.service` is a resident link watcher, not a boot-time oneshot: a PoE camera whose link only comes
+  up minutes after boot, or after the cable is moved to another PoE port, is still provisioned. The hub stays
+  usable meanwhile (the dependency was decoupled so it no longer queues behind provisioning).
+- The front (PoE RTSP) capture supervises itself: OpenCV's GStreamer `read()` blocks for as long as the source is
+  silent, so a stalled stream is detected by frame age and the stream is re-opened in place
+  (`SEG_DEMO_RTSP_STALL_TIMEOUT_S`, default 8 s; `SEG_DEMO_RTSP_RECONNECT_MIN_INTERVAL_S`, default 2 s).
 - The published repository is a single initial commit; the device's own Git working tree still carries its
   uncommitted local state, so decide the ongoing commit strategy separately.

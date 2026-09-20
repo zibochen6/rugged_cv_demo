@@ -141,7 +141,27 @@ class CameraManager:
         
         # Error tracking
         self._error_message: Optional[str] = None
-        
+
+        # RTSP stream supervision.
+        #
+        # OpenCV's GStreamer backend blocks inside read() for as long as the
+        # RTSP source is silent, so a stalled stream (cable pulled, camera
+        # power-cycled, PoE port down) can never be noticed from inside
+        # _capture_loop: the frame simply stops advancing while the state stays
+        # RUNNING and the UI shows a frozen "Connecting to camera...".
+        # Observed 2026-09-19: frame_age kept growing past 230 s with
+        # capture_fps still reporting the last good average.
+        # The supervisor watches the frame timestamp and re-opens the stream,
+        # mirroring the camera-gone reconnect the rear module already performs
+        # in app/warn_app.py.
+        self._shutdown = False
+        self._supervisor_thread: Optional[threading.Thread] = None
+        self._last_reconnect_at = 0.0
+        self._stall_timeout_s = float(
+            os.environ.get("SEG_DEMO_RTSP_STALL_TIMEOUT_S", "8"))
+        self._reconnect_min_interval_s = float(
+            os.environ.get("SEG_DEMO_RTSP_RECONNECT_MIN_INTERVAL_S", "2"))
+
         self._initialized = True
         logger.info("CameraManager initialized (singleton)")
     
@@ -229,7 +249,63 @@ class CameraManager:
                     break
         
         logger.info("Capture thread exiting")
-    
+
+    # ------------------------------------------------------------------
+    # RTSP stream supervision
+    # ------------------------------------------------------------------
+    def _is_rtsp(self) -> bool:
+        return bool(self._config and self._config.device.startswith("rtsp://"))
+
+    def _ensure_supervisor(self) -> None:
+        """Start the stream supervisor once (idempotent)."""
+        if self._supervisor_thread is not None and self._supervisor_thread.is_alive():
+            return
+        self._supervisor_thread = threading.Thread(
+            target=self._supervise, name="CameraStreamSupervisor", daemon=True)
+        self._supervisor_thread.start()
+
+    def _supervise(self) -> None:
+        """Re-open the RTSP stream when it stalls or errors out.
+
+        A deliberate stop() leaves the state DISCONNECTED, which this loop
+        ignores, so an operator-requested stop is never undone.
+        """
+        backoff = self._reconnect_min_interval_s
+        while not self._shutdown:
+            time.sleep(1.0)
+            if not self._is_rtsp():
+                continue
+
+            state = self.state
+            if state == CameraState.RUNNING:
+                with self._frame_lock:
+                    last = self._latest_timestamp
+                if last and (time.time() - last) <= self._stall_timeout_s:
+                    backoff = self._reconnect_min_interval_s
+                    continue
+                why = (f"no frame for {time.time() - last:.0f}s"
+                       if last else "no frame yet")
+            elif state == CameraState.ERROR:
+                why = "capture error"
+            else:
+                continue
+
+            now = time.time()
+            if now - self._last_reconnect_at < backoff:
+                continue
+            self._last_reconnect_at = now
+            backoff = min(backoff * 2.0, 30.0)
+
+            logger.warning("RTSP stream unhealthy (%s); reconnecting", why)
+            try:
+                device = self._config.device
+                self.stop()
+                self.start(device)
+                logger.info("RTSP stream reconnected")
+                backoff = self._reconnect_min_interval_s
+            except Exception as exc:  # noqa: BLE001 - supervision must not die
+                logger.error("RTSP reconnect failed: %s", exc)
+
     def start(self, device: str = "/dev/video0", width: int = 1280, 
               height: int = 720, fps: int = 30) -> CameraState:
         """
@@ -346,11 +422,17 @@ class CameraManager:
                     "no first frame within 3 seconds",
                 )
             self._set_state(CameraState.RUNNING)
+            self._ensure_supervisor()
             logger.info("Camera started successfully")
             return self._state
             
-        except CameraError:
+        except CameraError as e:
+            # Leave a *recoverable* state. Staying in OPENING made every later
+            # start() a no-op ("Camera already opening"), so a PoE camera that
+            # was merely not reachable yet could never be opened again — the
+            # module then reported "running" with CAPTURE 0.0 FPS forever.
             self._stop_internal()
+            self._set_state(CameraState.ERROR, str(e))
             raise
         except Exception as e:
             self._stop_internal()
@@ -490,6 +572,7 @@ class CameraManager:
         
         This is the preferred method for cleanup.
         """
+        self._shutdown = True
         self.stop()
     
     def __del__(self):

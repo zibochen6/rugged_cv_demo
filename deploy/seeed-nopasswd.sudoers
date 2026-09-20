@@ -1,6 +1,6 @@
 # seg_demo / Visual Hub — full passwordless sudo for the field operator account.
 #
-# Why: the Jetson desktop entry (deploy/visual-hub.desktop -> scripts/run_visual_hub_gui.sh)
+# Why: the Jetson desktop entry (deploy/visual-hub.desktop -> scripts/run_visual_hub.sh gui)
 # must be able to start visual-hub.service without a password prompt. This image is
 # L4T R35.5 / Ubuntu 20.04 with polkit 0.105, where `pkexec systemctl start ...`
 # always opens an authentication dialog and 50-local.d pkla rules are root-only.

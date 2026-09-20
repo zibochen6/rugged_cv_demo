@@ -12,7 +12,10 @@ Type=simple
 User=seeed
 Group=seeed
 WorkingDirectory=/home/seeed/workspace/seg_demo
-EnvironmentFile=/etc/seg-demo/visual-hub.env
+EnvironmentFile=-/etc/seg-demo/visual-hub.env
+# The `-` above is deliberate: the protected file only carries *factory default*
+# camera URLs. A generic deployment can boot with no such file at all and bind
+# each role from the Visual Hub UI (configs/_camera_bindings.yaml).
 Environment=HUB_PORT=8000
 ExecStart=/home/seeed/workspace/seg_demo/scripts/run_visual_hub.sh
 Restart=on-failure

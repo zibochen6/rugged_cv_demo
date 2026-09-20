@@ -4,9 +4,12 @@ from __future__ import annotations
 import os
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
-from .config import HubConfig, ModuleSpec, load_hub_config
+from configs._runtime_store import save_cameras
+
+from . import inventory
+from .config import ROLE_LABELS, HubConfig, ModuleSpec, canonical_source, load_hub_config
 from .events import EventBus, classify_fatigue, classify_helmet, classify_rear_level
 from .models import ModuleState, OccupancyLease, Severity
 from .occupancy import OccupancyError, OccupancyManager
@@ -21,6 +24,18 @@ LABELS = {
     "rear": "后视预警",
     "dms": "座舱监测",
 }
+
+#: Child processes the hub supervises. `front` deliberately runs in-process.
+CHILD_MODULES = ("rear", "dms")
+
+
+class CameraBindError(RuntimeError):
+    """A camera rebind was refused or could not be persisted."""
+
+    def __init__(self, message: str, code: str = "CAMERA_BIND_FAILED") -> None:
+        super().__init__(message)
+        self.message = message
+        self.code = code
 
 
 class HubRuntime:
@@ -134,10 +149,9 @@ class HubRuntime:
         if module_id == "front":
             return self._start_front()
         spec = self.config.module_specs()[module_id]
-        if module_id == "rear" and not spec.camera.startswith("rtsp://"):
-            raise RuntimeError("REAR_CAMERA_URL 未配置或不是 RTSP 地址")
-        if module_id == "dms" and spec.camera != "usb:0":
-            raise RuntimeError("座舱摄像头必须固定为 usb:0")
+        problem = inventory.validate(module_id, spec.camera)
+        if problem:
+            raise CameraBindError(problem, "CAMERA_INCOMPATIBLE")
         ok, holder = self.occupancy.check_available(spec.camera_slot, spec.camera, module_id)
         if not ok:
             raise OccupancyError(
@@ -157,8 +171,9 @@ class HubRuntime:
         if module_id == "rear":
             env["REAR_CAMERA_URL"] = spec.camera
         elif module_id == "dms":
-            env["DMS_CAMERA"] = "usb:0"
-            env["DMS_FIXED_USB_ONLY"] = "1"
+            # The cabin role is bound to whatever the operator picked; the old
+            # usb:0-only freeze (DMS_FIXED_USB_ONLY) is gone on purpose.
+            env["DMS_CAMERA"] = spec.camera
             env["DMS_THERMAL_STATE"] = str(
                 self._thermal_status.get("state", "normal"))
         gld = "/lib/aarch64-linux-gnu/libGLdispatch.so.0"
@@ -191,6 +206,7 @@ class HubRuntime:
                 "camera_slot": spec.camera_slot,
                 "port": spec.port,
                 "state": ModuleState.STARTING.value,
+                **self._camera_fields(module_id),
             })
             if module_id in self._thermal_applied:
                 self._thermal_applied[module_id] = None
@@ -280,10 +296,100 @@ class HubRuntime:
             raise RuntimeError(err)
         return data or {}
 
+    # ------------------------------------------------------------------
+    # camera selection
+    # ------------------------------------------------------------------
+
+    def camera_inventory(self) -> Dict[str, Any]:
+        """Detected cameras plus what each role is currently bound to."""
+        held = inventory.held_devices(self.occupancy.snapshot())
+        return {
+            "ok": True,
+            "cameras": inventory.build_inventory(self.config, held),
+            "modules": inventory.current_bindings(self.config),
+        }
+
+    def resolve_camera(self, camera_id_value: str) -> Tuple[str, str]:
+        """Map an opaque camera id (as sent by the UI) to `(source, label)`."""
+        found = inventory.resolve(self.config, camera_id_value)
+        if found is None:
+            raise CameraBindError(
+                f"未知的摄像头 id: {camera_id_value}", "UNKNOWN_CAMERA")
+        return found
+
+    def set_module_camera(self, module_id: str, source: str, *,
+                          restart: bool = True) -> Dict[str, Any]:
+        """Bind one role to `source`, persist it, and optionally restart it.
+
+        A running module must be stopped first: the source is handed to the child
+        process (or to the in-process CameraManager) exactly once, at start, and
+        neither `/api/config` nor `/api/dms_config` can change it live. Recording
+        mode is refused outright, because recording holds its own capture handles
+        on the same sources.
+        """
+        if module_id not in LABELS:
+            raise KeyError(module_id)
+        self._ensure_inference_mode()
+        # Canonicalize before anything is compared or persisted, so a source
+        # typed as `/dev/video2` is stored and leased as `usb:2` (the spelling
+        # the openers understand) and cannot look like a second camera.
+        source = canonical_source(source)
+        problem = inventory.validate(module_id, source)
+        if problem:
+            raise CameraBindError(problem, "CAMERA_INCOMPATIBLE")
+
+        spec = self.config.module_specs()[module_id]
+        active_states = (ModuleState.STARTING.value, ModuleState.RUNNING.value,
+                         ModuleState.DEGRADED.value)
+        was_live = self.module_status(module_id)["state"] in active_states
+        if was_live and not restart:
+            raise CameraBindError(
+                f"{LABELS[module_id]} 正在运行；请先停止该模块再切换摄像头",
+                "MODULE_RUNNING",
+            )
+        if source != spec.camera:
+            ok, holder = self.occupancy.check_available(
+                spec.camera_slot, source, module_id)
+            if not ok:
+                raise OccupancyError(
+                    f"{LABELS[module_id]} 无法绑定：相机正被 {holder} 占用",
+                    "CAMERA_BUSY",
+                )
+
+        previous = self.config.role_camera(module_id)
+        if was_live:
+            self.stop_module(module_id)
+        self.config.set_role_camera(module_id, source)
+        try:
+            save_cameras(self.config.bindings_path(), {module_id: source})
+        except Exception as exc:  # noqa: BLE001 - never leave memory ahead of disk
+            self.config.set_role_camera(module_id, previous)
+            if was_live:
+                try:
+                    self.start_module(module_id)
+                except Exception as restart_exc:  # noqa: BLE001
+                    print(f"[hub] could not restore {module_id}: {restart_exc}")
+            raise CameraBindError(
+                f"摄像头绑定无法持久化: {exc}", "CAMERA_BIND_FAILED") from exc
+
+        with self._lock:
+            self._states[module_id].update(self._camera_fields(module_id))
+        label = inventory.label_for(source)
+        self.events.emit(
+            module_id, "session",
+            f"{LABELS[module_id]} 摄像头已切换为 {label}",
+            Severity.INFO.value,
+            {"camera_id": inventory.camera_id(source), "camera_label": label},
+        )
+        if was_live:
+            return self.start_module(module_id)
+        return self.module_status(module_id)
+
     def _start_front(self) -> Dict[str, Any]:
         spec = self.config.module_specs()["front"]
-        if not spec.camera.startswith("rtsp://"):
-            raise RuntimeError("FRONT_CAMERA_URL 未配置或不是 RTSP 地址")
+        problem = inventory.validate("front", spec.camera)
+        if problem:
+            raise CameraBindError(problem, "CAMERA_INCOMPATIBLE")
         ok, holder = self.occupancy.check_available(spec.camera_slot, spec.camera, "front")
         if not ok:
             raise OccupancyError(f"前视相机正被 {holder} 占用", "CAMERA_BUSY")
@@ -325,6 +431,7 @@ class HubRuntime:
                 "camera_slot": spec.camera_slot,
                 "port": spec.port,
                 "last_error": None,
+                **self._camera_fields("front"),
             })
             self._thermal_applied["front"] = None
         self.events.emit("front", "session", "前视分割已就绪", Severity.INFO.value)
@@ -479,11 +586,13 @@ class HubRuntime:
                 self._thermal_applied["dms"] = thermal_state
 
     def _poll_front(self, spec: ModuleSpec) -> None:
+        camera = None
         try:
             from ..camera.manager import get_camera_manager
             from ..segment.service import get_segment_service
+            camera = get_camera_manager()
             data = get_segment_service().status()
-            capture = get_camera_manager().metrics()
+            capture = camera.metrics()
             err = None
         except Exception as exc:
             data, capture, err = {}, {}, str(exc)
@@ -495,17 +604,15 @@ class HubRuntime:
                     status["state"] = ModuleState.DEGRADED.value
                     status["last_error"] = err
                 return
-            status["health_ok"] = True
             if status["state"] == ModuleState.STOPPED.value:
                 return
-            status["state"] = ModuleState.RUNNING.value
-            status["last_error"] = None
+            camera_up = bool(camera is not None and camera.is_running)
             status["metrics"] = {
                 "state": data.get("state"),
                 "has_target": data.get("has_target"),
                 "model_fps": data.get("model_fps"),
                 "infer_ms": data.get("infer_ms"),
-                "camera_running": data.get("camera_running"),
+                "camera_running": camera_up,
                 **capture,
                 "inference_fps": data.get("model_fps"),
                 "target_fps": data.get("target_fps"),
@@ -515,6 +622,22 @@ class HubRuntime:
             status["camera"] = spec.camera_label
             status["camera_slot"] = spec.camera_slot
             status["port"] = spec.port
+            status.update(self._camera_fields("front"))
+            if not camera_up:
+                # Never promote a module whose capture is not actually running.
+                # Doing so reported a failed camera as RUNNING at 0.0 FPS with
+                # the error cleared — a green indicator for a dead stream. This
+                # matters now that an operator can point a role at a camera whose
+                # USB bus cannot grant it bandwidth.
+                status["health_ok"] = False
+                if status["state"] != ModuleState.ERROR.value:
+                    status["state"] = ModuleState.DEGRADED.value
+                if not status.get("last_error"):
+                    status["last_error"] = f"{spec.camera_label} 摄像头未打开"
+                return
+            status["health_ok"] = True
+            status["state"] = ModuleState.RUNNING.value
+            status["last_error"] = None
 
     def _poll_child(self, module_id: str, spec: ModuleSpec) -> None:
         with self._lock:
@@ -533,6 +656,7 @@ class HubRuntime:
             status["port"] = spec.port
             status["camera"] = spec.camera_label
             status["camera_slot"] = spec.camera_slot
+            status.update(self._camera_fields(module_id))
             status["stream_url"] = f"/api/hub/stream/{module_id}"
             status["native_url"] = f"http://127.0.0.1:{spec.port}{spec.stream_path}"
             if health_err and state_err:
@@ -647,6 +771,7 @@ class HubRuntime:
             "port": spec.port,
             "camera": spec.camera_label,
             "camera_slot": spec.camera_slot,
+            **self._camera_fields(module_id),
             "health_ok": False,
             "last_error": None,
             "started_at": None,
@@ -654,6 +779,23 @@ class HubRuntime:
             "metrics": {},
             "stream_url": f"/api/hub/stream/{module_id}",
             "native_url": None,
+        }
+
+    def _camera_fields(self, module_id: str) -> Dict[str, Any]:
+        """Camera identity for status payloads.
+
+        Only an opaque id and a display label — never the source URL, which
+        carries the PoE credentials. `tests/hub/test_runtime.py` asserts that no
+        status payload ever contains `rtsp://`, and the picker matches on
+        `camera_id` instead.
+        """
+        source = self.config.role_camera(module_id)
+        return {
+            "camera_id": inventory.camera_id(source) if source else None,
+            # Empty when the role has no camera, so the UI substitutes its own
+            # translated role name rather than being handed Chinese prose.
+            "camera_label": inventory.label_for(source) if source else "",
+            "camera_configured": bool(source),
         }
 
     @staticmethod

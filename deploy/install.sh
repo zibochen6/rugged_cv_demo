@@ -159,4 +159,5 @@ fi
 say "[7/7] done. Service state is unchanged; start with:"
 say "  sudo systemctl start visual-hub      # or ./scripts/run_visual_hub.sh"
 say "  ./scripts/run_visual_hub.sh stop     # stop and release cameras/GPU"
+say "  ./scripts/run_visual_hub.sh gui      # desktop entry: kiosk UI on a visible display"
 say "  reboot                               # verify boot auto-start (hub + poe-cam-net)"

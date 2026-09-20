@@ -348,7 +348,7 @@
 | `configs/vlm.yaml` | VLM 语义（llama.cpp） | `model.output_format json`(:21)、`image.max_side 384`(:31)、`semantic.ttl_ms 5000 / pretrigger 5.0m`(:34-43)、`tracker.match`(:50-60)、`ui.show_vlm_object false`(:64-67) |
 | `configs/pose.yaml` | 6D 位姿 | `pose_source chessboard|marker`(:10)、`object_profile`(:31)、`marker`(:46)、`validation`(:153)、`quality`(:221)、`recorder`(:252) |
 | `configs/two_cameras.env` | 双相机角色绑定（**前摄网口配置有误**） | `FRONT/REAR_CAMERA_URL`(:3-4)、`FRONT_IFACE eth0`(:8) ← 应为 eth2、`POE_GPIO_CHIP 2 / LINE 15`(:14-15) |
-| `configs/ip_camera.env` | 单相机一键启动 | `CAM_URL rtsp://admin:admin@192.168.137.20:554/`(:6)、`CAM_IFACE eth1`(:10)、`CAM_LOCAL_IP 192.168.137.100/24`(:11) |
+| `configs/ip_camera.env` | 单相机一键启动 | `CAM_URL rtsp://admin:***@192.168.137.20:554/`(:6)、`CAM_IFACE eth1`(:10)、`CAM_LOCAL_IP 192.168.137.100/24`(:11) |
 | `configs/dataset.yaml` | 数据集覆盖度建议 | `recommended_total 300`(:14) |
 | `configs/placement.yaml`（**已删除，HEAD 可取回**） | 落货配置 | `camera_extrinsics.{calibrated:false,height 1.60,pitch 32.0}`(:7-12)、`forklift.fork_tip_z 1.20 / spacing 0.68`(:14-19)、`placement.tolerance_x 0.05 / min_inside_ratio 0.95 / stable_time_s 0.8 / min_stable_frames 10`(:25-35)、`footprint.length_scale`(:43-53) |
 | `configs/target_zone.yaml` / `configs/marker_placement.yaml`（**已删除，HEAD 可取回**） | 地面目标区 / 前视 tag 几何 | 见 `_remote_evidence/code/git_head_configs/` |

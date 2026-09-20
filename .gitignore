@@ -22,6 +22,10 @@ models/mediapipe/
 logs/
 *.mp4
 *.png
+# ...but screenshots referenced by the READMEs are source, not runtime output.
+# Without this the image would be silently untracked and every fresh clone
+# would render a broken link.
+!docs/images/*.png
 
 # generated data (calibrations, datasets, recordings)
 /data/
@@ -49,3 +53,6 @@ frontend/dist/
 
 # runtime overrides written by the web UI (user-toggled state, not source)
 configs/_runtime_overrides.yaml
+# per-role camera bindings chosen in the web UI (holds RTSP credentials; never
+# committed — /etc/seg-demo/visual-hub.env stays the committed default source)
+configs/_camera_bindings.yaml
